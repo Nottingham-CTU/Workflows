@@ -1,0 +1,119 @@
+# Run the security scan (psalm) on a REDCap External Module
+
+name: REDCap External Module Security Scan
+
+on:
+  workflow_call:
+    inputs:
+      RC_COMMUNITY_USERNAME:
+        type: string
+        required: true
+      RC_SYSTEM_HOOKS:
+        type: boolean
+        default: false
+        required: false
+    secrets:
+      RC_COMMUNITY_PASSWORD:
+        required: true
+
+jobs:
+  scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Get latest REDCap version number
+        run: |
+          wget -O ~/redcap_version.json https://redcap.vumc.org/plugins/redcap_consortium/versions.php
+          redcap_version=$(jq -r '.latest_version' ~/redcap_version.json)
+          echo "redcap_version=$redcap_version" >> $GITHUB_ENV
+          rm ~/redcap_version.json
+
+      - name: Cache REDCap zip
+        id: cache-redcap
+        uses: actions/cache@v4
+        with:
+          path: ~/redcap.zip
+          key: redcap-${{ env.redcap_version }}
+
+      - name: Download latest REDCap version
+        if: steps.cache-redcap.outputs.cache-hit != 'true'
+        run: |
+          wget -q --post-data="username=${{ inputs.RC_COMMUNITY_USERNAME }}&password=${{ secrets.RC_COMMUNITY_PASSWORD }}&version=${{ env.redcap_version }}&install=1" -O ~/redcap.zip https://redcap.vumc.org/plugins/redcap_consortium/versions.php
+
+      - name: Check REDCap download size
+        if: steps.cache-redcap.outputs.cache-hit != 'true'
+        run: |
+          if [ $(stat -c%s ~/redcap.zip) -lt 10000000 ]; then
+            rm ~/redcap.zip
+            exit 1
+          fi
+
+      - name: Extract REDCap
+        run: |
+          mkdir ~/redcap
+          unzip -q -d ~/redcap ~/redcap.zip
+
+      - name: Set REDCap DB Connection values
+        run: |
+          echo '<?php' > ~/redcap/redcap/database.php
+          echo 'global $log_all_errors; $log_all_errors = false;' >> ~/redcap/redcap/database.php
+          echo '$hostname = "127.0.0.1"; $db = "redcap"; $username = "root"; $password = "root";' >> ~/redcap/redcap/database.php
+          echo '$db_ssl_key = ""; $db_ssl_cert = ""; $db_ssl_ca = ""; $db_ssl_capath = null; $db_ssl_cipher = null; $db_ssl_verify_server_cert = false;' >> ~/redcap/redcap/database.php
+          echo '$salt = "abc123";' >> ~/redcap/redcap/database.php
+
+      - name: Start MySQL
+        run: sudo /etc/init.d/mysql start
+
+      - name: Create REDCap MySQL database
+        run: mysql -e 'CREATE DATABASE redcap;' -uroot -proot
+
+      - name: Run installation SQL files
+        run: |
+          mysql -uroot -proot redcap < ~/redcap/redcap/redcap_v${{ env.redcap_version }}/Resources/sql/install.sql
+          mysql -uroot -proot redcap < ~/redcap/redcap/redcap_v${{ env.redcap_version }}/Resources/sql/install_data.sql
+          mysql -e 'UPDATE redcap_config SET value = '\''${{ env.redcap_version }}'\'' WHERE field_name = '\''redcap_version'\'';' -uroot -proot redcap
+          mysql -e 'REPLACE INTO redcap_history_version (`date`, redcap_version) VALUES (curdate(),'\''${{ env.redcap_version }}'\'');' -uroot -proot redcap
+
+      - name: Install scan script
+        run: |
+          mkdir ~/redcap/redcap/bin
+          echo '#!/usr/bin/env php' > ~/redcap/redcap/bin/scan
+          echo '<?php' >> ~/redcap/redcap/bin/scan
+          echo 'require_once __DIR__ . "/../redcap_connect.php";' >> ~/redcap/redcap/bin/scan
+          echo 'require_once APP_PATH_EXTMOD . "bin/scan.php";' >> ~/redcap/redcap/bin/scan
+          chmod 0755 ~/redcap/redcap/bin/scan
+
+      - name: Suppress errors for system hooks
+        if: inputs.RC_SYSTEM_HOOKS
+        run: sed -i -e 's/$warningDisplayed = true;//' ~/redcap/redcap/redcap_v${{ env.redcap_version }}/ExternalModules/classes/Scan.php
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install any composer dependencies
+        run: |
+          if [ -f "composer.lock" ]; then
+            composer install
+          fi
+
+      - name: Run psalm scan
+        run: |
+          echo "psalm_started=1" >> $GITHUB_ENV
+          ~/redcap/redcap/bin/scan --output=html-file ./
+
+      - name: Get file name and date
+        if: (success() || failure()) && env.psalm_started == '1'
+        run: |
+          psalm_output=$(ls redcap-scan_*.html)
+          echo "psalm_output=$psalm_output" >> $GITHUB_ENV
+          current_date=$(date -u +%F-%H-%M)
+          echo "current_date=$current_date" >> $GITHUB_ENV
+
+      - name: Store output as artifact
+        if: (success() || failure()) && env.psalm_started == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: redcap_scan_output_${{ env.current_date }}
+          path: ${{ env.psalm_output }}
+
