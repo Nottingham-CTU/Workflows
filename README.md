@@ -21,3 +21,21 @@ These are configured in the repository or organization settings:
   * If your module uses system hooks, you will need to uncomment the line to set the RC_SYSTEM_HOOKS
     input to true. This will prevent the security scan from failing due to warning about the system
     hooks.
+  * The security scan is always run using the latest version of REDCap.
+* [REDCap External Module Tests](files/redcap-module-tests.yml)
+  * This workflow requires the following variables and secrets:
+    * Variable **RC_INSTALLED_VERSION** - The version of REDCap you are using
+    * Variable **RC_COMMUNITY_USERNAME** - Your username for the REDCap community
+    * Secret **RC_COMMUNITY_PASSWORD** - Your password for the REDCap community
+  * If the workflow is triggered manually, it will run tests using the installed version (as defined
+    in the variable RC_INSTALLED_VERSION) of REDCap only. If triggered by pull request, it will run
+    tests on both the installed version and the latest version.
+  * Tests must be included in the repository in a *tests* folder. Test files must be pytest files as
+    exported by Selenium IDE or a similar tool. Initialisation steps should be placed in a file
+    named *init.py* and the actual tests must be named according to pytest conventions.
+  * If your pytest files reference the browser, using `webdriver.Chrome()` or `webdriver.Firefox()`,
+    this must be replaced with `self.selectedBrowser`. Tests will be run on both Chrome and Firefox
+    in parallel and must pass on both browsers to be considered a passing test.
+  * The test environment will be set up with 4 REDCap user accounts: `admin`, `user`, `user2` and
+    `user3`. Tests will begin logged in to the admin account. You can change to other accounts
+    during tests as required. The password for all accounts is `abc123`.
