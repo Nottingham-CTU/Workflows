@@ -73,9 +73,21 @@ jobs:
         run: |
           echo "redcap_version=${{ inputs.RC_INSTALLED_VERSION }}" >> $GITHUB_ENV
 
-      - name: Cache REDCap zip for version ${{ env.redcap_version }}
+      - name: Check for cached REDCap zip for version ${{ env.redcap_version }}
+        id: check-cache-redcap
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/redcap.zip
+          key: redcap-${{ env.redcap_version }}
+          lookup-only: true
+
+      - name: Wait for cache
+        if: steps.check-cache-redcap.outputs.cache-hit != 'true' && matrix.browser != 'chrome'
+        run: sleep 2m
+
+      - name: Restore REDCap zip for version ${{ env.redcap_version }}
         id: cache-redcap
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/redcap.zip
           key: redcap-${{ env.redcap_version }}
@@ -91,6 +103,13 @@ jobs:
           if [ $(stat -c%s ~/redcap.zip) -lt 10000000 ]; then
             exit 1
           fi
+
+      - name: Cache REDCap zip for version ${{ env.redcap_version }}
+        if: steps.cache-redcap.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/redcap.zip
+          key: redcap-${{ env.redcap_version }}
 
       - name: Extract REDCap and set up permissions
         run: |
@@ -195,6 +214,22 @@ jobs:
           echo '}' >> ~/webserver.config
           sudo cp ~/webserver.config /etc/nginx/sites-available/default
 
+      - name: Add mailer script and sentEmails PHP page
+        run: |
+          echo 'import sys' > ~/mailer.py
+          echo 'email = sys.stdin.replace("\r\n","\n") + "\n\n\n"' >> ~/mailer.py
+          echo 'with open("'$HOME'/sentEmails","a") as file:' >> ~/mailer.py
+          echo '  file.write(email)' >> ~/mailer.py
+          echo 'sys.exit(0)' >> ~/mailer.py
+          echo '<?php' > ~/redcap/redcap/sentEmails.php
+          echo 'header("Content-Type: text/plain");' >> ~/redcap/redcap/sentEmails.php
+          echo 'echo file_get_contents("'$HOME'/sentEmails");' >> ~/redcap/redcap/sentEmails.php
+
+      - name: Configure PHP
+        run: |
+          php_ini_path=$(php --ini | head -n 2 | tail -n 1 | sed "s/[^\/]*\//\//")
+          sudo sed -i "s/;\?sendmail_path =.*/sendmail_path = python3 \/home\/runner\/mailer.py/" $php_ini_path
+
       - name: Start web server
         run: |
           sudo service nginx start
@@ -232,6 +267,11 @@ jobs:
             mysql -uroot -proot redcap < ./tests/init.sql
           fi
 
+      - name: Prepare sessionStorage and sentEmails files
+        run: |
+          echo '{}' > ~/sessionStorage
+          echo '' > ~/sentEmails
+
       - name: Configure pytest for Chrome
         if: matrix.browser == 'chrome'
         run: |
@@ -258,6 +298,11 @@ jobs:
           echo '        time.sleep(1)' >> ./tests/conftest.py
           echo '' >> ./tests/conftest.py
           echo 'class ExtendedBrowserDriver(webdriver.Chrome):' >> ./tests/conftest.py
+          echo '  def quit(self):' >> ./tests/conftest.py
+          echo '    sessionStorage = self.execute_script("return (function(){var list={};for(var i=0;i<sessionStorage.length;i++){list[sessionStorage.key(i)]=sessionStorage.getItem(sessionStorage.key(i))};return JSON.stringify(list)})()")' >> ./tests/conftest.py
+          echo '    with open("'$HOME'/sessionStorage", "w") as file:' >> ./tests/conftest.py
+          echo '      file.write(sessionStorage)' >> ./tests/conftest.py
+          echo '    return super().quit()' >> ./tests/conftest.py
           echo '  def find_element(self,targetType,targetRef):' >> ./tests/conftest.py
           echo '    for i in range(8):' >> ./tests/conftest.py
           echo '      try:' >> ./tests/conftest.py
@@ -281,6 +326,8 @@ jobs:
           echo '    time.sleep(1)' >> ./tests/conftest.py
           echo '  elements = item.cls.selectedBrowser.find_elements(By.CSS_SELECTOR, "a[href*=\"logout=1\"]")' >> ./tests/conftest.py
           echo '  assert len(elements) > 0' >> ./tests/conftest.py
+          echo '  with open("'$HOME'/sessionStorage","r") as file:' >> ./tests/conftest.py
+          echo '    item.cls.selectedBrowser.execute_script("(function(input){input=JSON.parse(input);var keys=Object.keys(input);keys.forEach(function(key){sessionStorage.setItem(key,input[key])})})(arguments[0])",file.read())' >> ./tests/conftest.py
           echo '' >> ./tests/conftest.py
 
       - name: Configure pytest for Firefox
@@ -309,6 +356,11 @@ jobs:
           echo '        time.sleep(1)' >> ./tests/conftest.py
           echo '' >> ./tests/conftest.py
           echo 'class ExtendedBrowserDriver(webdriver.Firefox):' >> ./tests/conftest.py
+          echo '  def quit(self):' >> ./tests/conftest.py
+          echo '    sessionStorage = self.execute_script("return (function(){var list={};for(var i=0;i<sessionStorage.length;i++){list[sessionStorage.key(i)]=sessionStorage.getItem(sessionStorage.key(i))};return JSON.stringify(list)})()")' >> ./tests/conftest.py
+          echo '    with open("'$HOME'/sessionStorage", "w") as file:' >> ./tests/conftest.py
+          echo '      file.write(sessionStorage)' >> ./tests/conftest.py
+          echo '    return super().quit()' >> ./tests/conftest.py
           echo '  def find_element(self,targetType,targetRef):' >> ./tests/conftest.py
           echo '    for i in range(8):' >> ./tests/conftest.py
           echo '      try:' >> ./tests/conftest.py
@@ -333,6 +385,8 @@ jobs:
           echo '    time.sleep(1)' >> ./tests/conftest.py
           echo '  elements = item.cls.selectedBrowser.find_elements(By.CSS_SELECTOR, "a[href*=\"logout=1\"]")' >> ./tests/conftest.py
           echo '  assert len(elements) > 0' >> ./tests/conftest.py
+          echo '  with open("'$HOME'/sessionStorage","r") as file:' >> ./tests/conftest.py
+          echo '    item.cls.selectedBrowser.execute_script("(function(input){input=JSON.parse(input);var keys=Object.keys(input);keys.forEach(function(key){sessionStorage.setItem(key,input[key])})})(arguments[0])",file.read())' >> ./tests/conftest.py
           echo '' >> ./tests/conftest.py
 
       - name: Perform initial actions
@@ -362,14 +416,18 @@ jobs:
     runs-on: ubuntu-latest
     needs: [selenium]
     if: (success() || failure()) && needs.selenium.outputs.comp_inst_chrome == '1' && needs.selenium.outputs.comp_inst_firefox == '1' && needs.selenium.outputs.tests_inst_chrome != 'W10=' && needs.selenium.outputs.tests_inst_firefox != 'W10='
+    continue-on-error: true
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract test results
+      - name: Write test results to file
         run: |
           echo '${{ toJSON(needs.selenium.outputs) }}' > ~/selenium_outputs.json
+
+      - name: Extract module name/version and REDCap version(s)
+        run: |
           inst_version=$(jq -r '.inst_version' ~/selenium_outputs.json)
           echo "inst_version=$inst_version" >> $GITHUB_ENV
           new_version=$(jq -r '.new_version' ~/selenium_outputs.json)
@@ -378,6 +436,9 @@ jobs:
           echo "modulename=$modulename" >> $GITHUB_ENV
           module_version=$(jq -r '.new_version' ~/selenium_outputs.json)
           echo "module_version=$module_version" >> $GITHUB_ENV
+
+      - name: Extract test results
+        run: |
           jq -r '.tests_inst_chrome' ~/selenium_outputs.json | base64 -d | jq '.[]' > ~/tests_inst_chrome.json
           jq -r '.tests_inst_firefox' ~/selenium_outputs.json | base64 -d | jq '.[]' > ~/tests_inst_firefox.json
           jq -s '.' ~/tests_inst_chrome.json ~/tests_inst_firefox.json | jq 'sort_by(.file,.outcome)|unique_by(.file)|.[]|{name:.file,expected:"",scenario:""}+.' > ~/tests_inst.json
