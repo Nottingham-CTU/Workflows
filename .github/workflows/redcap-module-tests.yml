@@ -238,6 +238,7 @@ jobs:
         run: |
           sudo pip3 install pytest
           sudo pip3 install pytest-json-report
+          sudo pip3 install pytest-timeout
 
       - name: Install selenium
         run: |
@@ -312,6 +313,14 @@ jobs:
           echo '          raise' >> ./tests/conftest.py
           echo '        time.sleep(1)' >> ./tests/conftest.py
           echo '    return ExtendedWebElement(webElement)' >> ./tests/conftest.py
+          echo '  def find_elements(self,targetType,targetRef):' >> ./tests/conftest.py
+          echo '    listWebElements = super().find_elements(targetType,targetRef)' >> ./tests/conftest.py
+          echo '    for i in range(4):' >> ./tests/conftest.py
+          echo '      if len(listWebElements) > 0:' >> ./tests/conftest.py
+          echo '        return listWebElements' >> ./tests/conftest.py
+          echo '      time.sleep(1)' >> ./tests/conftest.py
+          echo '      listWebElements = super().find_elements(targetType,targetRef)' >> ./tests/conftest.py
+          echo '    return listWebElements' >> ./tests/conftest.py
           echo '' >> ./tests/conftest.py
           echo 'def pytest_runtest_setup(item):' >> ./tests/conftest.py
           echo '  opts = webdriver.ChromeOptions()' >> ./tests/conftest.py
@@ -370,6 +379,14 @@ jobs:
           echo '          raise' >> ./tests/conftest.py
           echo '        time.sleep(1)' >> ./tests/conftest.py
           echo '    return ExtendedWebElement(webElement)' >> ./tests/conftest.py
+          echo '  def find_elements(self,targetType,targetRef):' >> ./tests/conftest.py
+          echo '    listWebElements = super().find_elements(targetType,targetRef)' >> ./tests/conftest.py
+          echo '    for i in range(4):' >> ./tests/conftest.py
+          echo '      if len(listWebElements) > 0:' >> ./tests/conftest.py
+          echo '        return listWebElements' >> ./tests/conftest.py
+          echo '      time.sleep(1)' >> ./tests/conftest.py
+          echo '      listWebElements = super().find_elements(targetType,targetRef)' >> ./tests/conftest.py
+          echo '    return listWebElements' >> ./tests/conftest.py
           echo '' >> ./tests/conftest.py
           echo 'def pytest_runtest_setup(item):' >> ./tests/conftest.py
           echo '  opts = webdriver.FirefoxOptions()' >> ./tests/conftest.py
@@ -392,14 +409,14 @@ jobs:
       - name: Perform initial actions
         run: |
           if [ -f "./tests/init.py" ]; then
-            python3 -m pytest ./tests/init.py
+            python3 -m pytest --timeout=600 --timeout_method=thread ./tests/init.py
           fi
 
       - name: Run Tests
         id: run_tests
         run: |
           echo comp_${{ matrix.redcap_version }}_${{ matrix.browser }}=1 >> $GITHUB_OUTPUT
-          python3 -m pytest --json-report ./tests/
+          python3 -m pytest --timeout=600 --timeout_method=thread --json-report ./tests/
 
       - name: Get output from tests
         id: get_output
@@ -434,7 +451,7 @@ jobs:
           echo "new_version=$new_version" >> $GITHUB_ENV
           modulename=$(head -n 1 ./tests/dirname.txt)
           echo "modulename=$modulename" >> $GITHUB_ENV
-          module_version=$(jq -r '.new_version' ~/selenium_outputs.json)
+          module_version=$(jq -r '.module_version' ~/selenium_outputs.json)
           echo "module_version=$module_version" >> $GITHUB_ENV
 
       - name: Extract test results
@@ -464,10 +481,10 @@ jobs:
       - name: Create CSV files
         run: |
           mkdir ~/output
-          echo '"Functional Requirement Number","Functional Requirement","Expected Result","Testing Scenario","Tester Name","Date","Pass/Fail","Comments"' > ~/output/tests_${modulename}_rc${inst_version}.csv
+          echo '"Functional Requirement Number","Functional Requirement","Expected Result","Testing Scenario","Tester Name","Date","Pass/Fail","Comments"' > ~/output/tests_${modulename}_v${module_version}_rc${inst_version}.csv
           jq -r '[(.file|capture("(?<n>[1-9][0-9]*)")|.n),.name,.expected,.scenario,"'${{ github.actor }}'",(now|strftime("%Y-%m-%d")),(if .outcome=="passed" then "Pass" else "Fail" end),(if .error==null then "" else .error end)] | @csv' ~/tests_inst.json >> ~/output/tests_${modulename}_v${module_version}_rc${inst_version}.csv
           if [ ${{ env.new_version }} != "null" ]; then
-            echo '"Functional Requirement Number","Functional Requirement","Expected Result","Testing Scenario","Tester Name","Date","Pass/Fail","Comments"' > ~/output/tests_${modulename}_rc${new_version}.csv
+            echo '"Functional Requirement Number","Functional Requirement","Expected Result","Testing Scenario","Tester Name","Date","Pass/Fail","Comments"' > ~/output/tests_${modulename}_v${module_version}_rc${new_version}.csv
             jq -r '[(.file|capture("(?<n>[1-9][0-9]*)")|.n),.name,.expected,.scenario,"'${{ github.actor }}'",(now|strftime("%Y-%m-%d")),(if .outcome=="passed" then "Pass" else "Fail" end),(if .error==null then "" else .error end)] | @csv' ~/tests_inst.json >> ~/output/tests_${modulename}_v${module_version}_rc${new_version}.csv
           fi
 
@@ -479,6 +496,6 @@ jobs:
       - name: Store test output as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tests_${{ env.modulename }}_v${module_version}_${{ env.current_date }}
+          name: tests_${{ env.modulename }}_v${{ env.module_version }}_${{ env.current_date }}
           path: ~/output/
 
