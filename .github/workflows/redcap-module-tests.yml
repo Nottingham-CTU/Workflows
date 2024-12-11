@@ -196,7 +196,7 @@ jobs:
         run: |
           mysql -e 'INSERT INTO redcap_auth (`username`,`password`,`password_salt`,`legacy_hash`,`temp_pwd`,`password_question`,`password_answer`, `password_question_reminder`,`password_reset_key`) VALUES ('\''admin'\'',md5('\''abc123abc123'\''),'\''abc123'\'',1,0,NULL,NULL,'\''2099-12-31 23:59:59'\'',NULL),('\''user'\'',md5('\''abc123abc123'\''),'\''abc123'\'',1,0,NULL,NULL,'\''2099-12-31 23:59:59'\'',NULL),('\''user2'\'',md5('\''abc123abc123'\''),'\''abc123'\'',1,0,NULL,NULL,'\''2099-12-31 23:59:59'\'',NULL),('\''user3'\'',md5('\''abc123abc123'\''),'\''abc123'\'',1,0,NULL,NULL,'\''2099-12-31 23:59:59'\'',NULL);' -uroot -proot redcap
           mysql -e 'UPDATE redcap_user_information SET super_user = 0, account_manager = 0, access_system_config = 0, access_system_upgrade = 0, access_external_module_install = 0, admin_rights = 0, access_admin_dashboards = 0 WHERE ui_id = 1;' -uroot -proot redcap
-          mysql -e 'INSERT INTO redcap_user_information (`username`,`user_email`,`user_firstname`,`user_lastname`,`super_user`,`account_manager`,`access_system_config`,`access_system_upgrade`,`access_external_module_install`,`admin_rights`,`access_admin_dashboards`,`user_creation`,`allow_create_db`,`datetime_format`,`number_format_decimal`,`number_format_thousands_sep`,`csv_delimiter`,`two_factor_auth_secret`,`display_on_email_users`,`two_factor_auth_twilio_prompt_phone`,`two_factor_auth_code_expiration`,`messaging_email_preference`,`messaging_email_urgent_all`,`messaging_email_general_system`,`messaging_email_queue_time`,`api_token_auto_request`) VALUES ('\''admin'\'','\''richard.dooley@nottingham.ac.uk'\'','\''REDCap'\'','\''Admin'\'',1,1,1,1,1,1,1,'\''2022-03-01 07:30:00'\'',1,'\''D-M-Y_24'\'','\''.'\'','\'''\'','\'','\'','\''Z3G3FXFPTDFJRTPT'\'',1,1,2,'\''4_HOURS'\'',1,1,NULL,0),('\''user'\'','\''richard.dooley@nottingham.ac.uk'\'','\''REDCap'\'','\''User'\'',0,0,0,0,0,0,0,'\''2022-03-01 07:30:00'\'',0,'\''D-M-Y_24'\'','\''.'\'','\'''\'','\'','\'','\''SQ2WN4TMOCWJYU25'\'',1,1,2,'\''4_HOURS'\'',1,1,NULL,0);' -uroot -proot redcap
+          mysql -e 'INSERT INTO redcap_user_information (`username`,`user_email`,`user_firstname`,`user_lastname`,`super_user`,`account_manager`,`access_system_config`,`access_system_upgrade`,`access_external_module_install`,`admin_rights`,`access_admin_dashboards`,`user_creation`,`allow_create_db`,`datetime_format`,`number_format_decimal`,`number_format_thousands_sep`,`csv_delimiter`,`two_factor_auth_secret`,`display_on_email_users`,`two_factor_auth_twilio_prompt_phone`,`two_factor_auth_code_expiration`,`messaging_email_preference`,`messaging_email_urgent_all`,`messaging_email_general_system`,`messaging_email_queue_time`,`api_token_auto_request`) VALUES ('\''admin'\'','\''admin@example.com'\'','\''REDCap'\'','\''Admin'\'',1,1,1,1,1,1,1,'\''2022-03-01 07:30:00'\'',1,'\''D-M-Y_24'\'','\''.'\'','\'''\'','\'','\'','\''Z3G3FXFPTDFJRTPT'\'',1,1,2,'\''4_HOURS'\'',1,1,NULL,0),('\''user'\'','\''user@example.com'\'','\''REDCap'\'','\''User'\'',0,0,0,0,0,0,0,'\''2022-03-01 07:30:00'\'',0,'\''D-M-Y_24'\'','\''.'\'','\'''\'','\'','\'','\''SQ2WN4TMOCWJYU25'\'',1,1,2,'\''4_HOURS'\'',1,1,NULL,0),('\''user2'\'','\''user2@example.com'\'','\''REDCap'\'','\''User2'\'',0,0,0,0,0,0,0,'\''2022-03-01 07:30:00'\'',0,'\''D-M-Y_24'\'','\''.'\'','\'''\'','\'','\'','\''SQ2WN4TMOCWJYU25'\'',1,1,2,'\''4_HOURS'\'',1,1,NULL,0),('\''user3'\'','\''user3@example.com'\'','\''REDCap'\'','\''User3'\'',0,0,0,0,0,0,0,'\''2022-03-01 07:30:00'\'',0,'\''D-M-Y_24'\'','\''.'\'','\'''\'','\'','\'','\''SQ2WN4TMOCWJYU25'\'',1,1,2,'\''4_HOURS'\'',1,1,NULL,0);' -uroot -proot redcap
 
       - name: Configure web server
         run: |
@@ -256,6 +256,11 @@ jobs:
             composer install
           fi
 
+      - name: Set web browser driver for tests
+        run: |
+          sed -i -e 's/    self.driver = webdriver.\(Chrome\|Firefox\)()/    self.driver = self.selectedBrowser/' ./tests/init.py
+          sed -i -e 's/    self.driver = webdriver.\(Chrome\|Firefox\)()/    self.driver = self.selectedBrowser/' ./tests/test_*.py
+
       - name: Install module to REDCap modules folder
         run: |
           if [ ! -f "./tests/dirname.txt" ]; then
@@ -295,7 +300,9 @@ jobs:
           echo '  def click(self):' >> ./tests/conftest.py
           echo '    for i in range(8):' >> ./tests/conftest.py
           echo '      try:' >> ./tests/conftest.py
-          echo '        return self.webElement.click()' >> ./tests/conftest.py
+          echo '        clickResult = self.webElement.click()' >> ./tests/conftest.py
+          echo '        time.sleep(0.2)' >> ./tests/conftest.py
+          echo '        return clickResult' >> ./tests/conftest.py
           echo '      except (ElementClickInterceptedException, ElementNotInteractableException):' >> ./tests/conftest.py
           echo '        if i == 7:' >> ./tests/conftest.py
           echo '          raise' >> ./tests/conftest.py
@@ -361,7 +368,9 @@ jobs:
           echo '  def click(self):' >> ./tests/conftest.py
           echo '    for i in range(8):' >> ./tests/conftest.py
           echo '      try:' >> ./tests/conftest.py
-          echo '        return self.webElement.click()' >> ./tests/conftest.py
+          echo '        clickResult = self.webElement.click()' >> ./tests/conftest.py
+          echo '        time.sleep(0.2)' >> ./tests/conftest.py
+          echo '        return clickResult' >> ./tests/conftest.py
           echo '      except (ElementClickInterceptedException, ElementNotInteractableException):' >> ./tests/conftest.py
           echo '        if i == 7:' >> ./tests/conftest.py
           echo '          raise' >> ./tests/conftest.py
