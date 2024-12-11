@@ -39,3 +39,10 @@ These are configured in the repository or organization settings:
   * The test environment will be set up with 4 REDCap user accounts: `admin`, `user`, `user2` and
     `user3`. Tests will begin logged in to the admin account. You can change to other accounts
     during tests as required. The password for all accounts is `abc123`.
+* [Release REDCap Module](files/release-redcap-module.yml)
+  * This workflow will run when a pull request is merged into the main branch.
+  * It will create a release automatically using the version number from the pull request title and
+    the pull request description will be used as the release description.
+  * The release will include 2 zip files, the standard download zip and the REDCap module repo
+    package. The module repo package is similar to the GitHub auto-generated zip file, but includes
+    composer dependencies and excludes testing scripts.

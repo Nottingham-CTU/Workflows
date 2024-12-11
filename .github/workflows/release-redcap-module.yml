@@ -1,0 +1,108 @@
+# Create a release for a new version of a REDCap External Module, when a pull request with a version
+# number is merged into the main branch.
+
+name: Release REDCap Module
+
+on:
+  workflow_call:
+    inputs:
+      NO_REPO_PKG:
+        type: boolean
+        default: false
+        required: false
+
+
+jobs:
+  create_release:
+    name: Create Release
+    if: github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Get module version
+        env:
+          pullrequest_title: ${{ github.event.pull_request.title }}
+        run: |
+          if [ $pullrequest_title == "" ]; then
+            exit 1
+          else
+            module_version=$(echo $pullrequest_title | egrep -o '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
+            echo "module_version=$module_version" >> $GITHUB_ENV
+          fi
+          if [ $module_version == "" ]; then
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get module directory name
+        run: |
+          module_dirname=$(head -n 1 ./tests/dirname.txt)
+          if [ $module_dirname == "" ]; then
+            exit 1
+          fi
+          echo "module_dirname=$module_dirname" >> $GITHUB_ENV
+
+      - name: Install any composer dependencies
+        run: |
+          if [ -f "composer.lock" ]; then
+            composer install
+          fi
+
+      - name: Create release zip files
+        run: |
+          rm -r ./.[^.]*
+          if [ -d "./tests" ]; then
+            rm -r ./tests
+          fi
+          mkdir ~/files
+          mkdir ~/files/main
+          mkdir ~/files/repo
+          mkdir ~/files/main/${module_dirname}_v${module_version}
+          cp -r ./. ~/files/main/${module_dirname}_v${module_version}/
+          cp -r ./. ~/files/repo/
+          cd ~/files/main
+          zip -r ../${module_dirname}_v${module_version}.zip *
+          cd ~/files/repo
+          zip -r ../${module_dirname}_v${module_version}_repo_pkg.zip *
+          cd ~/files
+          filesdir=$(pwd)
+          echo "filesdir=$filesdir" >> $GITHUB_ENV
+
+      - name: Create release
+        env:
+          releasebody: ${{ github.event.pull_request.body }}
+        run: |
+          echo $releasebody | jq -Rc '{tag_name:"v${{ env.module_version }}",name:"v${{ env.module_version }}",body:.}' > ~/releasebody.json
+          curl -L -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "X-Github-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/${{ github.repository }}/releases \
+            -d "@$HOME/releasebody.json" > ~/releaseresponse.json
+          upload_url=$(jq -r '.upload_url' ~/releaseresponse.json)
+          echo "upload_url=$upload_url" >> $GITHUB_ENV
+
+      - name: Upload regular zip
+        run: |
+          upload_url1=$(echo $upload_url | sed 's/{?name,label}/?name=${{ env.module_dirname }}_v${{ env.module_version }}.zip/')
+          curl -L -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "X-Github-Api-Version: 2022-11-28" \
+            -H "Content-Type: application/zip" \
+            $upload_url1 \
+            --data-binary "@$filesdir/${module_dirname}_v${module_version}.zip"
+
+      - name: Upload repo zip
+        if: ${{ ! inputs.NO_REPO_PKG }}
+        run: |
+          upload_url2=$(echo $upload_url | sed 's/{?name,label}/?name=${{ env.module_dirname }}_v${{ env.module_version }}_repo_pkg.zip/')
+          curl -L -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "X-Github-Api-Version: 2022-11-28" \
+            -H "Content-Type: application/zip" \
+            $upload_url2 \
+            --data-binary "@$filesdir/${module_dirname}_v${module_version}_repo_pkg.zip"
