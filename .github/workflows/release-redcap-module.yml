@@ -26,7 +26,7 @@ jobs:
           if [ $pullrequest_title == "" ]; then
             exit 1
           else
-            module_version=$(echo $pullrequest_title | egrep -o '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
+            module_version=$(echo "$pullrequest_title" | egrep -o '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
             echo "module_version=$module_version" >> $GITHUB_ENV
           fi
           if [ $module_version == "" ]; then
@@ -74,7 +74,7 @@ jobs:
         env:
           releasebody: ${{ github.event.pull_request.body }}
         run: |
-          echo $releasebody | jq -Rc '{tag_name:"v${{ env.module_version }}",name:"v${{ env.module_version }}",body:.}' > ~/releasebody.json
+          echo "$releasebody" | jq -Rc '{tag_name:"v${{ env.module_version }}",name:"v${{ env.module_version }}",body:.}' > ~/releasebody.json
           curl -L -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
@@ -86,7 +86,7 @@ jobs:
 
       - name: Upload regular zip
         run: |
-          upload_url1=$(echo $upload_url | sed 's/{?name,label}/?name=${{ env.module_dirname }}_v${{ env.module_version }}.zip/')
+          upload_url1=$(echo "$upload_url" | sed 's/{?name,label}/?name=${{ env.module_dirname }}_v${{ env.module_version }}.zip/')
           curl -L -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
@@ -98,7 +98,7 @@ jobs:
       - name: Upload repo zip
         if: ${{ ! inputs.NO_REPO_PKG }}
         run: |
-          upload_url2=$(echo $upload_url | sed 's/{?name,label}/?name=${{ env.module_dirname }}_v${{ env.module_version }}_repo_pkg.zip/')
+          upload_url2=$(echo "$upload_url" | sed 's/{?name,label}/?name=${{ env.module_dirname }}_v${{ env.module_version }}_repo_pkg.zip/')
           curl -L -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
