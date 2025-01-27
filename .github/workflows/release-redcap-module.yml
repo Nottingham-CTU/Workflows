@@ -74,7 +74,7 @@ jobs:
         env:
           releasebody: ${{ github.event.pull_request.body }}
         run: |
-          echo "$releasebody" | jq -Rc '{tag_name:"v${{ env.module_version }}",name:"v${{ env.module_version }}",body:.}' > ~/releasebody.json
+          echo "$releasebody" | jq -Rcs '{tag_name:"v${{ env.module_version }}",name:"v${{ env.module_version }}",body:.}' > ~/releasebody.json
           curl -L -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
