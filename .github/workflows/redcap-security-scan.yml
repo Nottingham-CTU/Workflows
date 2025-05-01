@@ -29,9 +29,9 @@ jobs:
           echo "redcap_version=$redcap_version" >> $GITHUB_ENV
           rm ~/redcap_version.json
 
-      - name: Cache REDCap zip
+      - name: Restore REDCap zip for version ${{ env.redcap_version }}
         id: cache-redcap
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/redcap.zip
           key: redcap-${{ env.redcap_version }}
@@ -45,9 +45,15 @@ jobs:
         if: steps.cache-redcap.outputs.cache-hit != 'true'
         run: |
           if [ $(stat -c%s ~/redcap.zip) -lt 10000000 ]; then
-            rm ~/redcap.zip
             exit 1
           fi
+
+      - name: Cache REDCap zip for version ${{ env.redcap_version }}
+        if: steps.cache-redcap.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/redcap.zip
+          key: redcap-${{ env.redcap_version }}
 
       - name: Extract REDCap
         run: |
@@ -107,13 +113,25 @@ jobs:
         run: |
           psalm_output=$(ls redcap-scan_*.html)
           echo "psalm_output=$psalm_output" >> $GITHUB_ENV
+          psalm_output_json=$(echo "$psalm_output" | sed 's/.html$/.json/')
+          echo "psalm_output_json=$psalm_output_json" >> $GITHUB_ENV
+          touch "$psalm_output_json"
           current_date=$(date -u +%F-%H-%M)
           echo "current_date=$current_date" >> $GITHUB_ENV
+
+      - name: Psalm scan json output
+        if: (success() || failure()) && env.psalm_started == '1'
+        run: |
+          sed -i 's/--debug/--output-format=json/g' ~/redcap/redcap/redcap_v${{ env.redcap_version }}/ExternalModules/bin/scan.php
+          sed -i 's/--debug/--output-format=json/g' ~/redcap/redcap/redcap_v${{ env.redcap_version }}/ExternalModules/classes/Scan.php
+          ( ~/redcap/redcap/bin/scan ./ --output-format=json | jq >${{ env.psalm_output_json }} 2>/dev/null ) || true
 
       - name: Store output as artifact
         if: (success() || failure()) && env.psalm_started == '1'
         uses: actions/upload-artifact@v4
         with:
           name: redcap_scan_output_${{ env.current_date }}
-          path: ${{ env.psalm_output }}
+          path: |
+            ${{ env.psalm_output }}
+            ${{ env.psalm_output_json }}
 

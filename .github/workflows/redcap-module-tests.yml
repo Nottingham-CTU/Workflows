@@ -12,6 +12,9 @@ on:
       RC_INSTALLED_VERSION:
         type: string
         required: true
+      USERS_NAMES:
+        type: string
+        required: false
     secrets:
       RC_COMMUNITY_PASSWORD:
         required: true
@@ -260,6 +263,8 @@ jobs:
         run: |
           sed -i -e 's/    self.driver = webdriver.\(Chrome\|Firefox\)()/    self.driver = self.selectedBrowser/' ./tests/init.py
           sed -i -e 's/    self.driver = webdriver.\(Chrome\|Firefox\)()/    self.driver = self.selectedBrowser/' ./tests/test_*.py
+          sed -i -e 's/    print("ECHOSCREENSHOT")/    print(self.driver.get_screenshot_as_base64())/' ./tests/init.py
+          sed -i -e 's/    print("ECHOSCREENSHOT")/    print(self.driver.get_screenshot_as_base64())/' ./tests/test_*.py
 
       - name: Install module to REDCap modules folder
         run: |
@@ -281,8 +286,7 @@ jobs:
           echo '{}' > ~/sessionStorage
           echo '' > ~/sentEmails
 
-      - name: Configure pytest for Chrome
-        if: matrix.browser == 'chrome'
+      - name: Configure pytest
         run: |
           echo 'import pytest' > ./tests/conftest.py
           echo 'from selenium import webdriver' >> ./tests/conftest.py
@@ -307,8 +311,19 @@ jobs:
           echo '        if i == 7:' >> ./tests/conftest.py
           echo '          raise' >> ./tests/conftest.py
           echo '        time.sleep(1)' >> ./tests/conftest.py
+          echo '  def send_keys(self, *keys_to_send):' >> ./tests/conftest.py
+          echo '    if keys_to_send[0][0:8] == "REPODIR/":' >> ./tests/conftest.py
+          echo '      keys_to_send = list(keys_to_send)' >> ./tests/conftest.py
+          echo '      keys_to_send[0] = "'$(pwd)'" + keys_to_send[0][:7]' >> ./tests/conftest.py
+          echo '      keys_to_send = tuple(keys_to_send)' >> ./tests/conftest.py
+          echo '    return self.webElement.send_keys(*keys_to_send)' >> ./tests/conftest.py
           echo '' >> ./tests/conftest.py
-          echo 'class ExtendedBrowserDriver(webdriver.Chrome):' >> ./tests/conftest.py
+          if [ "${{ matrix.browser }}" == "chrome" ]; then
+            echo 'class ExtendedBrowserDriver(webdriver.Chrome):' >> ./tests/conftest.py
+          fi
+          if [ "${{ matrix.browser }}" == "firefox" ]; then
+            echo 'class ExtendedBrowserDriver(webdriver.Firefox):' >> ./tests/conftest.py
+          fi
           echo '  def quit(self):' >> ./tests/conftest.py
           echo '    sessionStorage = self.execute_script("return (function(){var list={};for(var i=0;i<sessionStorage.length;i++){list[sessionStorage.key(i)]=sessionStorage.getItem(sessionStorage.key(i))};return JSON.stringify(list)})()")' >> ./tests/conftest.py
           echo '    with open("'$HOME'/sessionStorage", "w") as file:' >> ./tests/conftest.py
@@ -333,78 +348,17 @@ jobs:
           echo '    return listWebElements' >> ./tests/conftest.py
           echo '' >> ./tests/conftest.py
           echo 'def pytest_runtest_setup(item):' >> ./tests/conftest.py
-          echo '  opts = webdriver.ChromeOptions()' >> ./tests/conftest.py
-          echo '  opts.add_argument("--headless")' >> ./tests/conftest.py
-          echo '  opts.add_argument("--window-size=3840,8640")' >> ./tests/conftest.py
-          echo '  item.cls.selectedBrowser = ExtendedBrowserDriver(options=opts)' >> ./tests/conftest.py
-          echo '  item.cls.selectedBrowser.get("http://127.0.0.1/")' >> ./tests/conftest.py
-          echo '  if item.cls.selectedBrowser.execute_script("return ($('\''#username'\'').length > 0 && $('\''#password'\'').length > 0)"):' >> ./tests/conftest.py
-          echo '    item.cls.selectedBrowser.find_element(By.ID, "username").send_keys("admin")' >> ./tests/conftest.py
-          echo '    item.cls.selectedBrowser.find_element(By.ID, "password").send_keys("abc123")' >> ./tests/conftest.py
-          echo '    item.cls.selectedBrowser.find_element(By.ID, "login_btn").click()' >> ./tests/conftest.py
-          echo '    time.sleep(1)' >> ./tests/conftest.py
-          echo '  elements = item.cls.selectedBrowser.find_elements(By.CSS_SELECTOR, "a[href*=\"logout=1\"]")' >> ./tests/conftest.py
-          echo '  assert len(elements) > 0' >> ./tests/conftest.py
-          echo '  with open("'$HOME'/sessionStorage","r") as file:' >> ./tests/conftest.py
-          echo '    item.cls.selectedBrowser.execute_script("(function(input){input=JSON.parse(input);var keys=Object.keys(input);keys.forEach(function(key){sessionStorage.setItem(key,input[key])})})(arguments[0])",file.read())' >> ./tests/conftest.py
-          echo '' >> ./tests/conftest.py
-
-      - name: Configure pytest for Firefox
-        if: matrix.browser == 'firefox'
-        run: |
-          echo 'import pytest' > ./tests/conftest.py
-          echo 'from selenium import webdriver' >> ./tests/conftest.py
-          echo 'from selenium.webdriver.common.by import By' >> ./tests/conftest.py
-          echo 'from selenium.common.exceptions import ElementClickInterceptedException' >> ./tests/conftest.py
-          echo 'from selenium.common.exceptions import ElementNotInteractableException' >> ./tests/conftest.py
-          echo 'from selenium.common.exceptions import NoSuchElementException' >> ./tests/conftest.py
-          echo 'import time' >> ./tests/conftest.py
-          echo '' >> ./tests/conftest.py
-          echo 'class ExtendedWebElement():' >> ./tests/conftest.py
-          echo '  def __init__(self,obj):' >> ./tests/conftest.py
-          echo '    self.webElement = obj' >> ./tests/conftest.py
-          echo '  def __getattr__(self,name):' >> ./tests/conftest.py
-          echo '    return getattr(self.webElement,name)' >> ./tests/conftest.py
-          echo '  def click(self):' >> ./tests/conftest.py
-          echo '    for i in range(8):' >> ./tests/conftest.py
-          echo '      try:' >> ./tests/conftest.py
-          echo '        clickResult = self.webElement.click()' >> ./tests/conftest.py
-          echo '        time.sleep(0.2)' >> ./tests/conftest.py
-          echo '        return clickResult' >> ./tests/conftest.py
-          echo '      except (ElementClickInterceptedException, ElementNotInteractableException):' >> ./tests/conftest.py
-          echo '        if i == 7:' >> ./tests/conftest.py
-          echo '          raise' >> ./tests/conftest.py
-          echo '        time.sleep(1)' >> ./tests/conftest.py
-          echo '' >> ./tests/conftest.py
-          echo 'class ExtendedBrowserDriver(webdriver.Firefox):' >> ./tests/conftest.py
-          echo '  def quit(self):' >> ./tests/conftest.py
-          echo '    sessionStorage = self.execute_script("return (function(){var list={};for(var i=0;i<sessionStorage.length;i++){list[sessionStorage.key(i)]=sessionStorage.getItem(sessionStorage.key(i))};return JSON.stringify(list)})()")' >> ./tests/conftest.py
-          echo '    with open("'$HOME'/sessionStorage", "w") as file:' >> ./tests/conftest.py
-          echo '      file.write(sessionStorage)' >> ./tests/conftest.py
-          echo '    return super().quit()' >> ./tests/conftest.py
-          echo '  def find_element(self,targetType,targetRef):' >> ./tests/conftest.py
-          echo '    for i in range(8):' >> ./tests/conftest.py
-          echo '      try:' >> ./tests/conftest.py
-          echo '        webElement = super().find_element(targetType,targetRef)' >> ./tests/conftest.py
-          echo '      except NoSuchElementException:' >> ./tests/conftest.py
-          echo '        if i == 7:' >> ./tests/conftest.py
-          echo '          raise' >> ./tests/conftest.py
-          echo '        time.sleep(1)' >> ./tests/conftest.py
-          echo '    return ExtendedWebElement(webElement)' >> ./tests/conftest.py
-          echo '  def find_elements(self,targetType,targetRef):' >> ./tests/conftest.py
-          echo '    listWebElements = super().find_elements(targetType,targetRef)' >> ./tests/conftest.py
-          echo '    for i in range(4):' >> ./tests/conftest.py
-          echo '      if len(listWebElements) > 0:' >> ./tests/conftest.py
-          echo '        return listWebElements' >> ./tests/conftest.py
-          echo '      time.sleep(1)' >> ./tests/conftest.py
-          echo '      listWebElements = super().find_elements(targetType,targetRef)' >> ./tests/conftest.py
-          echo '    return listWebElements' >> ./tests/conftest.py
-          echo '' >> ./tests/conftest.py
-          echo 'def pytest_runtest_setup(item):' >> ./tests/conftest.py
-          echo '  opts = webdriver.FirefoxOptions()' >> ./tests/conftest.py
-          echo '  opts.add_argument("--headless")' >> ./tests/conftest.py
-          echo '  opts.add_argument("--width=3840")' >> ./tests/conftest.py
-          echo '  opts.add_argument("--height=8640")' >> ./tests/conftest.py
+          if [ "${{ matrix.browser }}" == "chrome" ]; then
+            echo '  opts = webdriver.ChromeOptions()' >> ./tests/conftest.py
+            echo '  opts.add_argument("--headless")' >> ./tests/conftest.py
+            echo '  opts.add_argument("--window-size=3840,8640")' >> ./tests/conftest.py
+          fi
+          if [ "${{ matrix.browser }}" == "firefox" ]; then
+            echo '  opts = webdriver.FirefoxOptions()' >> ./tests/conftest.py
+            echo '  opts.add_argument("--headless")' >> ./tests/conftest.py
+            echo '  opts.add_argument("--width=3840")' >> ./tests/conftest.py
+            echo '  opts.add_argument("--height=8640")' >> ./tests/conftest.py
+          fi
           echo '  item.cls.selectedBrowser = ExtendedBrowserDriver(options=opts)' >> ./tests/conftest.py
           echo '  item.cls.selectedBrowser.get("http://127.0.0.1/")' >> ./tests/conftest.py
           echo '  if item.cls.selectedBrowser.execute_script("return ($('\''#username'\'').length > 0 && $('\''#password'\'').length > 0)"):' >> ./tests/conftest.py
@@ -491,13 +445,16 @@ jobs:
           fi
 
       - name: Create CSV files
+        env:
+          users_names: ${{ inputs.USERS_NAMES }}
         run: |
           mkdir ~/output
+          users_names='{'"$users_names"'}'
           echo '"Functional Requirement Number","Functional Requirement","Expected Result","Testing Scenario","Tester Name","Date","Pass/Fail","Comments"' > ~/output/tests_${modulename}_v${module_version}_rc${inst_version}.csv
-          jq -r '[(.file|capture("(?<n>[1-9][0-9]*)")|.n),.name,.expected,.scenario,"'${{ github.actor }}'",(now|strftime("%Y-%m-%d")),(if .outcome=="passed" then "Pass" else "Fail" end),(if .error==null then "" else .error end)] | @csv' ~/tests_inst.json >> ~/output/tests_${modulename}_v${module_version}_rc${inst_version}.csv
+          jq -r '[(.file|capture("(?<n>[1-9][0-9]*)")|.n),.name,.expected,.scenario,"'"$((echo "$users_names" | jq -r '."${{ github.actor }}" // "${{ github.actor }}"' 2>/dev/null) || echo "${{ github.actor }}")"'",(now|strftime("%Y-%m-%d")),(if .outcome=="passed" then "Pass" else "Fail" end),(if .error==null then "" else .error end)] | @csv' ~/tests_inst.json >> ~/output/tests_${modulename}_v${module_version}_rc${inst_version}.csv
           if [ ${{ env.new_version }} != "null" ]; then
             echo '"Functional Requirement Number","Functional Requirement","Expected Result","Testing Scenario","Tester Name","Date","Pass/Fail","Comments"' > ~/output/tests_${modulename}_v${module_version}_rc${new_version}.csv
-            jq -r '[(.file|capture("(?<n>[1-9][0-9]*)")|.n),.name,.expected,.scenario,"'${{ github.actor }}'",(now|strftime("%Y-%m-%d")),(if .outcome=="passed" then "Pass" else "Fail" end),(if .error==null then "" else .error end)] | @csv' ~/tests_inst.json >> ~/output/tests_${modulename}_v${module_version}_rc${new_version}.csv
+            jq -r '[(.file|capture("(?<n>[1-9][0-9]*)")|.n),.name,.expected,.scenario,"'"$((echo "$users_names" | jq -r '."${{ github.actor }}" // "${{ github.actor }}"' 2>/dev/null) || echo "${{ github.actor }}")"'",(now|strftime("%Y-%m-%d")),(if .outcome=="passed" then "Pass" else "Fail" end),(if .error==null then "" else .error end)] | @csv' ~/tests_inst.json >> ~/output/tests_${modulename}_v${module_version}_rc${new_version}.csv
           fi
 
       - name: Get date
