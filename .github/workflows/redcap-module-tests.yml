@@ -314,7 +314,7 @@ jobs:
           echo '  def send_keys(self, *keys_to_send):' >> ./tests/conftest.py
           echo '    if keys_to_send[0][0:8] == "REPODIR/":' >> ./tests/conftest.py
           echo '      keys_to_send = list(keys_to_send)' >> ./tests/conftest.py
-          echo '      keys_to_send[0] = "'$(pwd)'" + keys_to_send[0][:7]' >> ./tests/conftest.py
+          echo '      keys_to_send[0] = "'$(pwd)'" + keys_to_send[0][7:]' >> ./tests/conftest.py
           echo '      keys_to_send = tuple(keys_to_send)' >> ./tests/conftest.py
           echo '    return self.webElement.send_keys(*keys_to_send)' >> ./tests/conftest.py
           echo '' >> ./tests/conftest.py
