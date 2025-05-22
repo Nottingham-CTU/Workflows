@@ -66,18 +66,16 @@ jobs:
             echo "module_version=$module_version" >> $GITHUB_OUTPUT
           fi
 
-      - name: Get latest REDCap version number
-        if: matrix.redcap_version == 'new'
+      - name: Get REDCap version
         run: |
-          wget -O ~/redcap_version.json https://redcap.vumc.org/plugins/redcap_consortium/versions.php
-          redcap_version=$(jq -r '.latest_version' ~/redcap_version.json)
-          echo "redcap_version=$redcap_version" >> $GITHUB_ENV
-          rm ~/redcap_version.json
-
-      - name: Get installed REDCap version number
-        if: matrix.redcap_version == 'inst'
-        run: |
-          echo "redcap_version=${{ inputs.RC_INSTALLED_VERSION }}" >> $GITHUB_ENV
+          if [ "${{ matrix.redcap_version }}" == "inst" ]; then
+            echo "redcap_version=${{ inputs.RC_INSTALLED_VERSION }}" >> $GITHUB_ENV
+          else
+            wget -O ~/redcap_version.json https://redcap.vumc.org/plugins/redcap_consortium/versions.php
+            redcap_version=$(jq -r '.latest_version' ~/redcap_version.json)
+            echo "redcap_version=$redcap_version" >> $GITHUB_ENV
+            rm ~/redcap_version.json
+          fi
 
       - name: Check for cached REDCap zip for version ${{ env.redcap_version }}
         id: check-cache-redcap
@@ -117,27 +115,23 @@ jobs:
           path: ~/redcap.zip
           key: redcap-${{ env.redcap_version }}
 
-      - name: Extract REDCap and set up permissions
+      - name: Extract REDCap and set up permissions and DB connection
         run: |
           mkdir ~/redcap
           unzip -q -d ~/redcap ~/redcap.zip
           sudo chmod +x /home
           sudo chmod +x ~/
           chmod -R 0777 ~/redcap
-
-      - name: Set REDCap DB Connection values
-        run: |
           echo '<?php' > ~/redcap/redcap/database.php
           echo 'global $log_all_errors; $log_all_errors = false;' >> ~/redcap/redcap/database.php
           echo '$hostname = "127.0.0.1"; $db = "redcap"; $username = "root"; $password = "root";' >> ~/redcap/redcap/database.php
           echo '$db_ssl_key = ""; $db_ssl_cert = ""; $db_ssl_ca = ""; $db_ssl_capath = null; $db_ssl_cipher = null; $db_ssl_verify_server_cert = false;' >> ~/redcap/redcap/database.php
           echo '$salt = "abc123";' >> ~/redcap/redcap/database.php
 
-      - name: Start MySQL
-        run: sudo /etc/init.d/mysql start
-
-      - name: Create REDCap MySQL database
-        run: mysql -e 'CREATE DATABASE redcap;' -uroot -proot
+      - name: Start MySQL and create REDCap database
+        run: |
+          sudo /etc/init.d/mysql start
+          mysql -e 'CREATE DATABASE redcap;' -uroot -proot
 
       - name: Run installation SQL files
         run: |
@@ -197,9 +191,9 @@ jobs:
 
       - name: Set up user accounts
         run: |
-          mysql -e 'INSERT INTO redcap_auth (`username`,`password`,`password_salt`,`legacy_hash`,`temp_pwd`,`password_question`,`password_answer`, `password_question_reminder`,`password_reset_key`) VALUES ('\''admin'\'',md5('\''abc123abc123'\''),'\''abc123'\'',1,0,NULL,NULL,'\''2099-12-31 23:59:59'\'',NULL),('\''user'\'',md5('\''abc123abc123'\''),'\''abc123'\'',1,0,NULL,NULL,'\''2099-12-31 23:59:59'\'',NULL),('\''user2'\'',md5('\''abc123abc123'\''),'\''abc123'\'',1,0,NULL,NULL,'\''2099-12-31 23:59:59'\'',NULL),('\''user3'\'',md5('\''abc123abc123'\''),'\''abc123'\'',1,0,NULL,NULL,'\''2099-12-31 23:59:59'\'',NULL);' -uroot -proot redcap
+          mysql -e 'INSERT INTO redcap_auth (`username`,`password`,`password_salt`,`legacy_hash`,`temp_pwd`,`password_question`,`password_answer`, `password_question_reminder`,`password_reset_key`) VALUES ('\''admin'\'',md5('\''abc123abc123'\''),'\''abc123'\'',1,0,NULL,NULL,'\''2099-12-31 23:59:59'\'',NULL),('\''user'\'',md5('\''abc123abc123'\''),'\''abc123'\'',1,0,NULL,NULL,'\''2099-12-31 23:59:59'\'',NULL),('\''user1'\'',md5('\''abc123abc123'\''),'\''abc123'\'',1,0,NULL,NULL,'\''2099-12-31 23:59:59'\'',NULL),('\''user2'\'',md5('\''abc123abc123'\''),'\''abc123'\'',1,0,NULL,NULL,'\''2099-12-31 23:59:59'\'',NULL),('\''user3'\'',md5('\''abc123abc123'\''),'\''abc123'\'',1,0,NULL,NULL,'\''2099-12-31 23:59:59'\'',NULL),('\''user4'\'',md5('\''abc123abc123'\''),'\''abc123'\'',1,0,NULL,NULL,'\''2099-12-31 23:59:59'\'',NULL),('\''user5'\'',md5('\''abc123abc123'\''),'\''abc123'\'',1,0,NULL,NULL,'\''2099-12-31 23:59:59'\'',NULL);' -uroot -proot redcap
           mysql -e 'UPDATE redcap_user_information SET super_user = 0, account_manager = 0, access_system_config = 0, access_system_upgrade = 0, access_external_module_install = 0, admin_rights = 0, access_admin_dashboards = 0 WHERE ui_id = 1;' -uroot -proot redcap
-          mysql -e 'INSERT INTO redcap_user_information (`username`,`user_email`,`user_firstname`,`user_lastname`,`super_user`,`account_manager`,`access_system_config`,`access_system_upgrade`,`access_external_module_install`,`admin_rights`,`access_admin_dashboards`,`user_creation`,`allow_create_db`,`datetime_format`,`number_format_decimal`,`number_format_thousands_sep`,`csv_delimiter`,`two_factor_auth_secret`,`display_on_email_users`,`two_factor_auth_twilio_prompt_phone`,`two_factor_auth_code_expiration`,`messaging_email_preference`,`messaging_email_urgent_all`,`messaging_email_general_system`,`messaging_email_queue_time`,`api_token_auto_request`) VALUES ('\''admin'\'','\''admin@example.com'\'','\''REDCap'\'','\''Admin'\'',1,1,1,1,1,1,1,'\''2022-03-01 07:30:00'\'',1,'\''D-M-Y_24'\'','\''.'\'','\'''\'','\'','\'','\''Z3G3FXFPTDFJRTPT'\'',1,1,2,'\''4_HOURS'\'',1,1,NULL,0),('\''user'\'','\''user@example.com'\'','\''REDCap'\'','\''User'\'',0,0,0,0,0,0,0,'\''2022-03-01 07:30:00'\'',0,'\''D-M-Y_24'\'','\''.'\'','\'''\'','\'','\'','\''SQ2WN4TMOCWJYU25'\'',1,1,2,'\''4_HOURS'\'',1,1,NULL,0),('\''user2'\'','\''user2@example.com'\'','\''REDCap'\'','\''User2'\'',0,0,0,0,0,0,0,'\''2022-03-01 07:30:00'\'',0,'\''D-M-Y_24'\'','\''.'\'','\'''\'','\'','\'','\''SQ2WN4TMOCWJYU25'\'',1,1,2,'\''4_HOURS'\'',1,1,NULL,0),('\''user3'\'','\''user3@example.com'\'','\''REDCap'\'','\''User3'\'',0,0,0,0,0,0,0,'\''2022-03-01 07:30:00'\'',0,'\''D-M-Y_24'\'','\''.'\'','\'''\'','\'','\'','\''SQ2WN4TMOCWJYU25'\'',1,1,2,'\''4_HOURS'\'',1,1,NULL,0);' -uroot -proot redcap
+          mysql -e 'INSERT INTO redcap_user_information (`username`,`user_email`,`user_firstname`,`user_lastname`,`super_user`,`account_manager`,`access_system_config`,`access_system_upgrade`,`access_external_module_install`,`admin_rights`,`access_admin_dashboards`,`user_creation`,`allow_create_db`,`datetime_format`,`number_format_decimal`,`number_format_thousands_sep`,`csv_delimiter`,`two_factor_auth_secret`,`display_on_email_users`,`two_factor_auth_twilio_prompt_phone`,`two_factor_auth_code_expiration`,`messaging_email_preference`,`messaging_email_urgent_all`,`messaging_email_general_system`,`messaging_email_queue_time`,`ui_state`,`api_token_auto_request`) VALUES ('\''admin'\'','\''admin@example.com'\'','\''REDCap'\'','\''Admin'\'',1,1,1,1,1,1,1,'\''2022-03-01 07:30:00'\'',1,'\''D-M-Y_24'\'','\''.'\'','\'''\'','\'','\'','\''Z3G3FXFPTDFJRTPT'\'',1,1,2,'\''4_HOURS'\'',1,1,NULL,'\''a:1:{s:0:"";a:1:{s:15:"online-designer";a:1:{s:32:"dismissed_new_drag_and_drop_info";s:1:"1";}}}'\'',0),('\''user'\'','\''user@example.com'\'','\''REDCap'\'','\''User'\'',0,0,0,0,0,0,0,'\''2022-03-01 07:30:00'\'',0,'\''D-M-Y_24'\'','\''.'\'','\'''\'','\'','\'','\''SQ2WN4TMOCWJYU25'\'',1,1,2,'\''4_HOURS'\'',1,1,NULL,'\''a:1:{s:0:"";a:1:{s:15:"online-designer";a:1:{s:32:"dismissed_new_drag_and_drop_info";s:1:"1";}}}'\'',0),('\''user1'\'','\''user1@example.com'\'','\''REDCap'\'','\''User1'\'',0,0,0,0,0,0,0,'\''2022-03-01 07:30:00'\'',0,'\''D-M-Y_24'\'','\''.'\'','\'''\'','\'','\'','\''SQ2WN4TMOCWJYU25'\'',1,1,2,'\''4_HOURS'\'',1,1,NULL,'\''a:1:{s:0:"";a:1:{s:15:"online-designer";a:1:{s:32:"dismissed_new_drag_and_drop_info";s:1:"1";}}}'\'',0),('\''user2'\'','\''user2@example.com'\'','\''REDCap'\'','\''User2'\'',0,0,0,0,0,0,0,'\''2022-03-01 07:30:00'\'',0,'\''D-M-Y_24'\'','\''.'\'','\'''\'','\'','\'','\''SQ2WN4TMOCWJYU25'\'',1,1,2,'\''4_HOURS'\'',1,1,NULL,'\''a:1:{s:0:"";a:1:{s:15:"online-designer";a:1:{s:32:"dismissed_new_drag_and_drop_info";s:1:"1";}}}'\'',0),('\''user3'\'','\''user3@example.com'\'','\''REDCap'\'','\''User3'\'',0,0,0,0,0,0,0,'\''2022-03-01 07:30:00'\'',0,'\''D-M-Y_24'\'','\''.'\'','\'''\'','\'','\'','\''SQ2WN4TMOCWJYU25'\'',1,1,2,'\''4_HOURS'\'',1,1,NULL,'\''a:1:{s:0:"";a:1:{s:15:"online-designer";a:1:{s:32:"dismissed_new_drag_and_drop_info";s:1:"1";}}}'\'',0),('\''user4'\'','\''user4@example.com'\'','\''REDCap'\'','\''User4'\'',0,0,0,0,0,0,0,'\''2022-03-01 07:30:00'\'',0,'\''D-M-Y_24'\'','\''.'\'','\'''\'','\'','\'','\''SQ2WN4TMOCWJYU25'\'',1,1,2,'\''4_HOURS'\'',1,1,NULL,'\''a:1:{s:0:"";a:1:{s:15:"online-designer";a:1:{s:32:"dismissed_new_drag_and_drop_info";s:1:"1";}}}'\'',0),('\''user5'\'','\''user5@example.com'\'','\''REDCap'\'','\''User5'\'',0,0,0,0,0,0,0,'\''2022-03-01 07:30:00'\'',0,'\''D-M-Y_24'\'','\''.'\'','\'''\'','\'','\'','\''SQ2WN4TMOCWJYU25'\'',1,1,2,'\''4_HOURS'\'',1,1,NULL,'\''a:1:{s:0:"";a:1:{s:15:"online-designer";a:1:{s:32:"dismissed_new_drag_and_drop_info";s:1:"1";}}}'\'',0);' -uroot -proot redcap
 
       - name: Configure web server
         run: |
@@ -222,14 +216,17 @@ jobs:
 
       - name: Add mailer script and sentEmails PHP page
         run: |
-          echo 'import sys' > ~/mailer.py
-          echo 'email = sys.stdin.replace("\r\n","\n") + "\n\n\n"' >> ~/mailer.py
+          echo '{}' > ~/sessionStorage
+          echo '' > ~/sentEmails
+          echo 'import json' > ~/mailer.py
+          echo 'import sys' >> ~/mailer.py
+          echo 'email = "," + json.dumps(sys.stdin.replace("\r\n","\n"))' >> ~/mailer.py
           echo 'with open("'$HOME'/sentEmails","a") as file:' >> ~/mailer.py
           echo '  file.write(email)' >> ~/mailer.py
           echo 'sys.exit(0)' >> ~/mailer.py
           echo '<?php' > ~/redcap/redcap/sentEmails.php
-          echo 'header("Content-Type: text/plain");' >> ~/redcap/redcap/sentEmails.php
-          echo 'echo file_get_contents("'$HOME'/sentEmails");' >> ~/redcap/redcap/sentEmails.php
+          echo 'header("Content-Type: application/json");' >> ~/redcap/redcap/sentEmails.php
+          echo 'echo "[", substr(file_get_contents("'$HOME'/sentEmails"),1), "]";' >> ~/redcap/redcap/sentEmails.php
 
       - name: Configure PHP
         run: |
@@ -266,25 +263,17 @@ jobs:
           sed -i -e 's/    print("ECHOSCREENSHOT")/    print(self.driver.get_screenshot_as_base64())/' ./tests/init.py
           sed -i -e 's/    print("ECHOSCREENSHOT")/    print(self.driver.get_screenshot_as_base64())/' ./tests/test_*.py
 
-      - name: Install module to REDCap modules folder
+      - name: Install module to REDCap modules folder and set up in database
         run: |
           if [ ! -f "./tests/dirname.txt" ]; then
             echo "test" > ./tests/dirname.txt
           fi
           cp -r ./. ~/redcap/redcap/modules/$(head -n 1 ./tests/dirname.txt)_v${module_version}/
-
-      - name: Set up module in database
-        run: |
           mysql -e 'INSERT INTO redcap_external_modules (external_module_id,directory_prefix) VALUES (1,'\'$(head -n 1 ./tests/dirname.txt)\'');' -uroot -proot redcap
           mysql -e 'INSERT INTO redcap_external_module_settings (external_module_id,`key`,`type`,`value`) VALUES (1,'\''version'\'','\''string'\'','\''v'${module_version}\'');' -uroot -proot redcap
           if [ -f "./tests/init.sql" ]; then
             mysql -uroot -proot redcap < ./tests/init.sql
           fi
-
-      - name: Prepare sessionStorage and sentEmails files
-        run: |
-          echo '{}' > ~/sessionStorage
-          echo '' > ~/sentEmails
 
       - name: Configure pytest
         run: |
@@ -371,6 +360,16 @@ jobs:
           echo '  with open("'$HOME'/sessionStorage","r") as file:' >> ./tests/conftest.py
           echo '    item.cls.selectedBrowser.execute_script("(function(input){input=JSON.parse(input);var keys=Object.keys(input);keys.forEach(function(key){sessionStorage.setItem(key,input[key])})})(arguments[0])",file.read())' >> ./tests/conftest.py
           echo '' >> ./tests/conftest.py
+          echo 'def pytest_exception_interact(node,call,report):' >> ./tests/conftest.py
+          echo '  if isinstance(node, pytest.Item) and report.failed:' >> ./tests/conftest.py
+          echo '    with open("'$HOME'/fails/" + node.name + ".png","xb") as file:' >> ./tests/conftest.py
+          echo '      file.write(node.cls.selectedBrowser.get_screenshot_as_png())' >> ./tests/conftest.py
+          echo '    with open("'$HOME'/fails/" + node.name + ".html","x") as file:' >> ./tests/conftest.py
+          echo '      file.write(node.cls.selectedBrowser.execute_script("return document.querySelector('\''html'\'').outerHTML"))' >> ./tests/conftest.py
+          echo '    with open("'$HOME'/fails/" + node.name + ".txt","x") as file:' >> ./tests/conftest.py
+          echo '      file.write(report.longreprtext)' >> ./tests/conftest.py
+          echo '' >> ./tests/conftest.py
+          mkdir ~/fails
 
       - name: Perform initial actions
         run: |
@@ -392,6 +391,21 @@ jobs:
             echo tests_${{ matrix.redcap_version }}_${{ matrix.browser }}=$(jq '.tests[]|{file:(.keywords[]|select(endswith(".py")))}+.+{error:.call.longrepr,error_line:.call.crash.lineno}|del(.["nodeid","setup","teardown","keywords","call","lineno"])' ./.report.json | jq -s '.' | jq -c -r '@base64') >> $GITHUB_OUTPUT
           fi
           echo ${{ matrix.redcap_version }}_version=${{ env.redcap_version }} >> $GITHUB_OUTPUT
+
+      - name: Get module name and date
+        if: failure()
+        run: |
+          modulename=$(head -n 1 ./tests/dirname.txt)
+          echo "modulename=$modulename" >> $GITHUB_ENV
+          current_date=$(date -u +%F-%H-%M)
+          echo "current_date=$current_date" >> $GITHUB_ENV
+
+      - name: Store data from failures as artifact
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fails_${{ env.modulename }}_v${{ env.module_version }}_rc${{ env.redcap_version }}_${{ matrix.browser }}_${{ env.current_date }}
+          path: ~/fails/
 
 
   output:

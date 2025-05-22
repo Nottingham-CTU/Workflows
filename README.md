@@ -37,13 +37,17 @@ These are configured in the repository or organization settings:
   * Tests must be included in the repository in a *tests* folder. Test files must be pytest files as
     exported by Selenium IDE or a similar tool. Initialisation steps should be placed in a file
     named *init.py* and the actual tests must be named according to pytest conventions.
-  * The test environment will be set up with 4 REDCap user accounts: `admin`, `user`, `user2` and
-    `user3`. Tests will begin logged in to the admin account. You can change to other accounts
-    during tests as required. The password for all accounts is `abc123`.
+  * The test environment will be set up with 6 REDCap user accounts: `admin`, `user1`, `user2`,
+    `user3`, `user4` and `user5`. Tests will begin logged in to the admin account. You can change to
+    other accounts during tests as required. The password for all accounts is `abc123`.
   * If you need to upload a file during your test, use the `send_keys` command, targeted on a file
     upload field. The value passed to the `send_keys` command should be the path to a file within
     your repository. Prefix the path with `REPODIR/` to reference your repository root, for example
     to upload a file *hello.txt* in the *tests* folder, use `REPODIR/tests/hello.txt`.
+  * Once tests are complete the results will be stored as CSV file(s) in an artifact and can be
+    downloaded. Note that if a failure occurs in the initialisation stage there will be no test
+    results. In the event a test fails the exception information, a screenshot and a HTML file
+    representing the state of the page at the time of failure are stored in a separate artifact.
 * [Release REDCap Module](files/release-redcap-module.yml)
   * This workflow will run when a pull request is merged into the main branch.
   * It will create a release automatically using the version number from the pull request title and
