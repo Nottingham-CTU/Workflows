@@ -216,7 +216,7 @@ jobs:
 
       - name: Add mailer script and sentEmails PHP page
         run: |
-          echo '{}' > ~/sessionStorage
+          echo '{"is_github":"1"}' > ~/sessionStorage
           echo '' > ~/sentEmails
           echo 'import json' > ~/mailer.py
           echo 'import sys' >> ~/mailer.py
@@ -293,18 +293,29 @@ jobs:
           echo '  def click(self):' >> ./tests/conftest.py
           echo '    for i in range(8):' >> ./tests/conftest.py
           echo '      try:' >> ./tests/conftest.py
-          echo '        clickResult = self.webElement.click()' >> ./tests/conftest.py
+          echo '        if self.parent.execute_script("return sessionStorage.getItem(\"github_js_actions\") == \"1\""):' >> ./tests/conftest.py
+          echo '          self.parent.execute_script("if(arguments[0].tagName.toLowerCase()==\"option\")arguments[0].selected=true;else arguments[0].click()",self.webElement)' >> ./tests/conftest.py
+          echo '        else:' >> ./tests/conftest.py
+          echo '          self.webElement.click()' >> ./tests/conftest.py
           echo '        time.sleep(0.2)' >> ./tests/conftest.py
-          echo '        return clickResult' >> ./tests/conftest.py
+          echo '        return self.webElement' >> ./tests/conftest.py
           echo '      except (ElementClickInterceptedException, ElementNotInteractableException):' >> ./tests/conftest.py
           echo '        if i == 7:' >> ./tests/conftest.py
           echo '          raise' >> ./tests/conftest.py
           echo '        time.sleep(1)' >> ./tests/conftest.py
+          echo '  def find_element(self, by, value):' >> ./tests/conftest.py
+          echo '    return ExtendedWebElement(self.webElement.find_element(by, value))' >> ./tests/conftest.py
           echo '  def send_keys(self, *keys_to_send):' >> ./tests/conftest.py
+          echo '    if keys_to_send[0] == "ECHOSCREENSHOT":' >> ./tests/conftest.py
+          echo '      print(self.webElement.screenshot_as_base64)' >> ./tests/conftest.py
+          echo '      return self.webElement' >> ./tests/conftest.py
           echo '    if keys_to_send[0][0:8] == "REPODIR/":' >> ./tests/conftest.py
           echo '      keys_to_send = list(keys_to_send)' >> ./tests/conftest.py
           echo '      keys_to_send[0] = "'$(pwd)'" + keys_to_send[0][7:]' >> ./tests/conftest.py
           echo '      keys_to_send = tuple(keys_to_send)' >> ./tests/conftest.py
+          echo '    if self.parent.execute_script("return sessionStorage.getItem(\"github_js_actions\") == \"1\""):' >> ./tests/conftest.py
+          echo '      self.parent.execute_script("arguments[0].value = arguments[1]",self.webElement,keys_to_send[0])' >> ./tests/conftest.py
+          echo '      return self.webElement' >> ./tests/conftest.py
           echo '    return self.webElement.send_keys(*keys_to_send)' >> ./tests/conftest.py
           echo '' >> ./tests/conftest.py
           if [ "${{ matrix.browser }}" == "chrome" ]; then
@@ -314,6 +325,7 @@ jobs:
             echo 'class ExtendedBrowserDriver(webdriver.Firefox):' >> ./tests/conftest.py
           fi
           echo '  def quit(self):' >> ./tests/conftest.py
+          echo '    self.execute_script("sessionStorage.removeItem(\"github_js_actions\")")' >> ./tests/conftest.py
           echo '    sessionStorage = self.execute_script("return (function(){var list={};for(var i=0;i<sessionStorage.length;i++){list[sessionStorage.key(i)]=sessionStorage.getItem(sessionStorage.key(i))};return JSON.stringify(list)})()")' >> ./tests/conftest.py
           echo '    with open("'$HOME'/sessionStorage", "w") as file:' >> ./tests/conftest.py
           echo '      file.write(sessionStorage)' >> ./tests/conftest.py
@@ -362,10 +374,14 @@ jobs:
           echo '' >> ./tests/conftest.py
           echo 'def pytest_exception_interact(node,call,report):' >> ./tests/conftest.py
           echo '  if isinstance(node, pytest.Item) and report.failed:' >> ./tests/conftest.py
-          echo '    with open("'$HOME'/fails/" + node.name + ".png","xb") as file:' >> ./tests/conftest.py
-          echo '      file.write(node.cls.selectedBrowser.get_screenshot_as_png())' >> ./tests/conftest.py
-          echo '    with open("'$HOME'/fails/" + node.name + ".html","x") as file:' >> ./tests/conftest.py
-          echo '      file.write(node.cls.selectedBrowser.execute_script("return document.querySelector('\''html'\'').outerHTML"))' >> ./tests/conftest.py
+          echo '    try:' >> ./tests/conftest.py
+          echo '      pngdata = node.cls.selectedBrowser.get_screenshot_as_png()' >> ./tests/conftest.py
+          echo '      with open("'$HOME'/fails/" + node.name + ".png","xb") as file:' >> ./tests/conftest.py
+          echo '        file.write(pngdata)' >> ./tests/conftest.py
+          echo '      with open("'$HOME'/fails/" + node.name + ".html","x") as file:' >> ./tests/conftest.py
+          echo '        file.write(node.cls.selectedBrowser.execute_script("return document.querySelector('\''html'\'').outerHTML"))' >> ./tests/conftest.py
+          echo '    except:' >> ./tests/conftest.py
+          echo '      pass' >> ./tests/conftest.py
           echo '    with open("'$HOME'/fails/" + node.name + ".txt","x") as file:' >> ./tests/conftest.py
           echo '      file.write(report.longreprtext)' >> ./tests/conftest.py
           echo '' >> ./tests/conftest.py
@@ -374,14 +390,14 @@ jobs:
       - name: Perform initial actions
         run: |
           if [ -f "./tests/init.py" ]; then
-            python3 -m pytest --timeout=600 --timeout_method=thread ./tests/init.py
+            python3 -m pytest -rfEP --timeout=600 --timeout_method=thread ./tests/init.py
           fi
 
       - name: Run Tests
         id: run_tests
         run: |
           echo comp_${{ matrix.redcap_version }}_${{ matrix.browser }}=1 >> $GITHUB_OUTPUT
-          python3 -m pytest --timeout=600 --timeout_method=thread --json-report ./tests/
+          python3 -m pytest -rfEP --timeout=600 --timeout_method=thread --json-report ./tests/
 
       - name: Get output from tests
         id: get_output
