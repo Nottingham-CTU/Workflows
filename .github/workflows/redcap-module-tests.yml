@@ -239,13 +239,13 @@ jobs:
 
       - name: Install pytest
         run: |
-          sudo pip3 install pytest
-          sudo pip3 install pytest-json-report
-          sudo pip3 install pytest-timeout
+          pip3 install pytest
+          pip3 install pytest-json-report
+          pip3 install pytest-timeout
 
       - name: Install selenium
         run: |
-          sudo pip3 install selenium
+          pip3 install selenium
 
       - name: Checkout repository
         uses: actions/checkout@v4
