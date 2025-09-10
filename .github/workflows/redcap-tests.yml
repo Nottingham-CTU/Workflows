@@ -1,0 +1,822 @@
+# Run tests on REDCap
+
+name: REDCap Tests
+
+on:
+  workflow_call:
+    inputs:
+      RC_COMMUNITY_USERNAME:
+        type: string
+        required: true
+      RC_INSTALLED_VERSION:
+        type: string
+        required: true
+      USERS_NAMES:
+        type: string
+        required: false
+    secrets:
+      RC_COMMUNITY_PASSWORD:
+        required: true
+      SECRET1:
+        required: false
+      SECRET2:
+        required: false
+
+jobs:
+  selenium:
+    name: Selenium Tests
+    runs-on: ubuntu-latest
+
+    outputs:
+      tests_inst_chrome: ${{ steps.get_artifact_id.outputs.tests_inst_chrome }}
+      tests_inst_firefox: ${{ steps.get_artifact_id.outputs.tests_inst_firefox }}
+      tests_new_chrome: ${{ steps.get_artifact_id.outputs.tests_new_chrome }}
+      tests_new_firefox: ${{ steps.get_artifact_id.outputs.tests_new_firefox }}
+      inst_version: ${{ steps.get_output.outputs.inst_version }}
+      new_version: ${{ steps.get_output.outputs.new_version }}
+      comp_inst_chrome: ${{ steps.run_tests.outputs.comp_inst_chrome }}
+      comp_inst_firefox: ${{ steps.run_tests.outputs.comp_inst_firefox }}
+      unit_name: ${{ steps.initial_actions.outputs.unit_name }}
+      unit_version: ${{ steps.get_unit_version.outputs.unit_version }}
+      current_date: ${{ steps.initial_actions.outputs.current_date }}
+      external_save_url: ${{ steps.initial_actions.outputs.external_save_url }}
+      external_save_data: ${{ steps.initial_actions.outputs.external_save_data }}
+
+    strategy:
+      matrix:
+        redcap_version: [inst, new]
+        browser: [chrome, firefox]
+        exclude:
+          - redcap_version: ${{ github.event_name != 'pull_request' && 'new' }}
+      fail-fast: false
+
+    steps:
+      - name: Get unit (module/project) version
+        id: get_unit_version
+        env:
+          pullrequest_title: ${{ github.event.pull_request.title }}
+        run: |
+          if [ ${#pullrequest_title} -lt 5 ]; then
+            curl -L -H "Accept: application/vnd.github+json" \
+                 -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+                 -H "X-GitHub-Api-Version: 2022-11-28" \
+                 https://api.github.com/repos/${{ github.repository }}/releases/latest > ~/latest_release.json
+            unit_version=$(jq -r '.tag_name // ""' ~/latest_release.json | egrep -o '[0-9]+\.[0-9]+\.[0-9]+' || echo "")
+          else
+            unit_version=$(echo $pullrequest_title | egrep -o '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
+          fi
+          if [[ ${#unit_version} < 5 ]]; then
+            echo "unit_version=0.1" >> $GITHUB_ENV
+            echo "unit_version=0.1" >> $GITHUB_OUTPUT
+          else
+            echo "unit_version=$unit_version" >> $GITHUB_ENV
+            echo "unit_version=$unit_version" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Get REDCap version
+        run: |
+          if [ "${{ matrix.redcap_version }}" == "inst" ] && [ "${{ inputs.RC_INSTALLED_VERSION }}" != "" ]; then
+            echo "redcap_version=${{ inputs.RC_INSTALLED_VERSION }}" >> $GITHUB_ENV
+          else
+            wget -O ~/redcap_version.json https://redcap.vumc.org/plugins/redcap_consortium/versions.php
+            redcap_version=$(jq -r '.latest_version' ~/redcap_version.json)
+            echo "redcap_version=$redcap_version" >> $GITHUB_ENV
+            rm ~/redcap_version.json
+          fi
+
+      - name: Check for cached REDCap zip for version ${{ env.redcap_version }}
+        id: check-cache-redcap
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/redcap.zip
+          key: redcap-${{ env.redcap_version }}
+          lookup-only: true
+
+      - name: Wait for cache
+        if: steps.check-cache-redcap.outputs.cache-hit != 'true' && matrix.browser != 'chrome'
+        run: sleep 2m
+
+      - name: Restore REDCap zip for version ${{ env.redcap_version }}
+        id: cache-redcap
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/redcap.zip
+          key: redcap-${{ env.redcap_version }}
+
+      - name: Download REDCap version ${{ env.redcap_version }}
+        if: steps.cache-redcap.outputs.cache-hit != 'true'
+        run: |
+          wget -q --post-data="username=${{ inputs.RC_COMMUNITY_USERNAME }}&password=${{ secrets.RC_COMMUNITY_PASSWORD }}&version=${{ env.redcap_version }}&install=1" -O ~/redcap.zip https://redcap.vumc.org/plugins/redcap_consortium/versions.php
+
+      - name: Check REDCap download size
+        if: steps.cache-redcap.outputs.cache-hit != 'true'
+        run: |
+          if [ $(stat -c%s ~/redcap.zip) -lt 10000000 ]; then
+            exit 1
+          fi
+
+      - name: Cache REDCap zip for version ${{ env.redcap_version }}
+        if: steps.cache-redcap.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/redcap.zip
+          key: redcap-${{ env.redcap_version }}
+
+      - name: Extract REDCap and set up permissions and DB connection
+        run: |
+          mkdir ~/redcap
+          unzip -q -d ~/redcap ~/redcap.zip
+          sudo chmod +x /home
+          sudo chmod +x ~/
+          chmod -R 0777 ~/redcap
+          echo '<?php' > ~/redcap/redcap/database.php
+          echo 'global $log_all_errors; $log_all_errors = false;' >> ~/redcap/redcap/database.php
+          echo '$hostname = "127.0.0.1"; $db = "redcap"; $username = "root"; $password = "root";' >> ~/redcap/redcap/database.php
+          echo '$db_ssl_key = ""; $db_ssl_cert = ""; $db_ssl_ca = ""; $db_ssl_capath = null; $db_ssl_cipher = null; $db_ssl_verify_server_cert = false;' >> ~/redcap/redcap/database.php
+          echo '$salt = "abc123";' >> ~/redcap/redcap/database.php
+
+      - name: Start MySQL and create REDCap database
+        run: |
+          export MYSQL_PWD="root"
+          echo "MYSQL_PWD=$MYSQL_PWD" >> $GITHUB_ENV
+          sudo /etc/init.d/mysql start
+          mysql -e 'CREATE DATABASE redcap;' -uroot
+
+      - name: Run installation SQL files
+        run: |
+          mysql -uroot redcap < ~/redcap/redcap/redcap_v${{ env.redcap_version }}/Resources/sql/install.sql
+          mysql -uroot redcap < ~/redcap/redcap/redcap_v${{ env.redcap_version }}/Resources/sql/install_data.sql
+          for sql_file in $(ls -v ~/redcap/redcap/redcap_v${{ env.redcap_version }}/Resources/sql/create_demo_db*.sql); do mysql -uroot redcap < $sql_file; done
+          mysql -e 'UPDATE redcap_config SET value = '\''${{ env.redcap_version }}'\'' WHERE field_name = '\''redcap_version'\'';' -uroot redcap
+          mysql -e 'REPLACE INTO redcap_history_version (`date`, redcap_version) VALUES (curdate(),'\''${{ env.redcap_version }}'\'');' -uroot redcap
+
+      - name: Set up REDCap configuration
+        run: |
+          mysql -e 'UPDATE redcap_config SET value = '\''table'\'' WHERE field_name = '\''auth_meth_global'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_config SET `value` = '\''120'\'' WHERE `field_name` = '\''autologout_timer'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_config SET `value` = '\''1'\'' WHERE `field_name` = '\''is_development_server'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_config SET `value` = '\''5'\'' WHERE `field_name` = '\''logout_fail_limit'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_config SET `value` = '\''15'\'' WHERE `field_name` = '\''logout_fail_window'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_config SET `value` = '\''0'\'' WHERE `field_name` = '\''password_complexity'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_config SET `value` = '\''0'\'' WHERE `field_name` = '\''password_history_limit'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_config SET `value` = '\''6'\'' WHERE `field_name` = '\''password_length'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_config SET `value` = '\''0'\'' WHERE `field_name` = '\''password_reset_duration'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_config SET `value` = '\''http://127.0.0.1/'\'' WHERE `field_name` = '\''redcap_base_url'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''1'\'' WHERE `validation_name` = '\''alpha_only'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''1'\'' WHERE `validation_name` = '\''date_dmy'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''0'\'' WHERE `validation_name` = '\''date_mdy'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''0'\'' WHERE `validation_name` = '\''date_ymd'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''1'\'' WHERE `validation_name` = '\''datetime_dmy'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''0'\'' WHERE `validation_name` = '\''datetime_mdy'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''1'\'' WHERE `validation_name` = '\''datetime_seconds_dmy'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''0'\'' WHERE `validation_name` = '\''datetime_seconds_mdy'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''0'\'' WHERE `validation_name` = '\''datetime_seconds_ymd'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''0'\'' WHERE `validation_name` = '\''datetime_ymd'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''1'\'' WHERE `validation_name` = '\''email'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''1'\'' WHERE `validation_name` = '\''integer'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''0'\'' WHERE `validation_name` = '\''mrn_10d'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''0'\'' WHERE `validation_name` = '\''mrn_generic'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''1'\'' WHERE `validation_name` = '\''number'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''1'\'' WHERE `validation_name` = '\''number_1dp'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''0'\'' WHERE `validation_name` = '\''number_1dp_comma_decimal'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''1'\'' WHERE `validation_name` = '\''number_2dp'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''0'\'' WHERE `validation_name` = '\''number_2dp_comma_decimal'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''1'\'' WHERE `validation_name` = '\''number_3dp'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''0'\'' WHERE `validation_name` = '\''number_3dp_comma_decimal'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''1'\'' WHERE `validation_name` = '\''number_4dp'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''0'\'' WHERE `validation_name` = '\''number_4dp_comma_decimal'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''0'\'' WHERE `validation_name` = '\''number_comma_decimal'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''0'\'' WHERE `validation_name` = '\''phone'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''0'\'' WHERE `validation_name` = '\''phone_australia'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''0'\'' WHERE `validation_name` = '\''postalcode_australia'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''0'\'' WHERE `validation_name` = '\''postalcode_canada'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''0'\'' WHERE `validation_name` = '\''postalcode_french'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''0'\'' WHERE `validation_name` = '\''postalcode_germany'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''0'\'' WHERE `validation_name` = '\''ssn'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''1'\'' WHERE `validation_name` = '\''time'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''1'\'' WHERE `validation_name` = '\''time_mm_ss'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''0'\'' WHERE `validation_name` = '\''vmrn'\'';' -uroot redcap
+          mysql -e 'UPDATE redcap_validation_types SET `visible` = '\''0'\'' WHERE `validation_name` = '\''zipcode'\'';' -uroot redcap
+
+      - name: Set up user accounts
+        run: |
+          mysql -e 'INSERT INTO redcap_auth (`username`,`password`,`password_salt`,`legacy_hash`,`temp_pwd`,`password_question`,`password_answer`, `password_question_reminder`,`password_reset_key`) VALUES ('\''admin'\'',md5('\''abc123abc123'\''),'\''abc123'\'',1,0,NULL,NULL,'\''2099-12-31 23:59:59'\'',NULL),('\''user1'\'',md5('\''abc123abc123'\''),'\''abc123'\'',1,0,NULL,NULL,'\''2099-12-31 23:59:59'\'',NULL),('\''user2'\'',md5('\''abc123abc123'\''),'\''abc123'\'',1,0,NULL,NULL,'\''2099-12-31 23:59:59'\'',NULL),('\''user3'\'',md5('\''abc123abc123'\''),'\''abc123'\'',1,0,NULL,NULL,'\''2099-12-31 23:59:59'\'',NULL),('\''user4'\'',md5('\''abc123abc123'\''),'\''abc123'\'',1,0,NULL,NULL,'\''2099-12-31 23:59:59'\'',NULL),('\''user5'\'',md5('\''abc123abc123'\''),'\''abc123'\'',1,0,NULL,NULL,'\''2099-12-31 23:59:59'\'',NULL);' -uroot redcap
+          mysql -e 'UPDATE redcap_user_information SET super_user = 0, account_manager = 0, access_system_config = 0, access_system_upgrade = 0, access_external_module_install = 0, admin_rights = 0, access_admin_dashboards = 0 WHERE ui_id = 1;' -uroot redcap
+          mysql -e 'INSERT INTO redcap_user_information (`username`,`user_email`,`user_firstname`,`user_lastname`,`super_user`,`account_manager`,`access_system_config`,`access_system_upgrade`,`access_external_module_install`,`admin_rights`,`access_admin_dashboards`,`user_creation`,`allow_create_db`,`datetime_format`,`number_format_decimal`,`number_format_thousands_sep`,`csv_delimiter`,`two_factor_auth_secret`,`display_on_email_users`,`two_factor_auth_twilio_prompt_phone`,`two_factor_auth_code_expiration`,`messaging_email_preference`,`messaging_email_urgent_all`,`messaging_email_general_system`,`messaging_email_queue_time`,`ui_state`,`api_token_auto_request`) VALUES ('\''admin'\'','\''admin@example.com'\'','\''REDCap'\'','\''Admin'\'',1,1,1,1,1,1,1,'\''2022-03-01 07:30:00'\'',1,'\''D-M-Y_24'\'','\''.'\'','\'''\'','\'','\'','\''Z3G3FXFPTDFJRTPT'\'',1,1,2,'\''4_HOURS'\'',1,1,NULL,'\''a:1:{s:0:"";a:1:{s:15:"online-designer";a:1:{s:32:"dismissed_new_drag_and_drop_info";s:1:"1";}}}'\'',0),('\''user1'\'','\''user1@example.com'\'','\''REDCap'\'','\''User1'\'',0,0,0,0,0,0,0,'\''2022-03-01 07:30:00'\'',0,'\''D-M-Y_24'\'','\''.'\'','\'''\'','\'','\'','\''SQ2WN4TMOCWJYU25'\'',1,1,2,'\''4_HOURS'\'',1,1,NULL,'\''a:1:{s:0:"";a:1:{s:15:"online-designer";a:1:{s:32:"dismissed_new_drag_and_drop_info";s:1:"1";}}}'\'',0),('\''user2'\'','\''user2@example.com'\'','\''REDCap'\'','\''User2'\'',0,0,0,0,0,0,0,'\''2022-03-01 07:30:00'\'',0,'\''D-M-Y_24'\'','\''.'\'','\'''\'','\'','\'','\''SQ2WN4TMOCWJYU25'\'',1,1,2,'\''4_HOURS'\'',1,1,NULL,'\''a:1:{s:0:"";a:1:{s:15:"online-designer";a:1:{s:32:"dismissed_new_drag_and_drop_info";s:1:"1";}}}'\'',0),('\''user3'\'','\''user3@example.com'\'','\''REDCap'\'','\''User3'\'',0,0,0,0,0,0,0,'\''2022-03-01 07:30:00'\'',0,'\''D-M-Y_24'\'','\''.'\'','\'''\'','\'','\'','\''SQ2WN4TMOCWJYU25'\'',1,1,2,'\''4_HOURS'\'',1,1,NULL,'\''a:1:{s:0:"";a:1:{s:15:"online-designer";a:1:{s:32:"dismissed_new_drag_and_drop_info";s:1:"1";}}}'\'',0),('\''user4'\'','\''user4@example.com'\'','\''REDCap'\'','\''User4'\'',0,0,0,0,0,0,0,'\''2022-03-01 07:30:00'\'',0,'\''D-M-Y_24'\'','\''.'\'','\'''\'','\'','\'','\''SQ2WN4TMOCWJYU25'\'',1,1,2,'\''4_HOURS'\'',1,1,NULL,'\''a:1:{s:0:"";a:1:{s:15:"online-designer";a:1:{s:32:"dismissed_new_drag_and_drop_info";s:1:"1";}}}'\'',0),('\''user5'\'','\''user5@example.com'\'','\''REDCap'\'','\''User5'\'',0,0,0,0,0,0,0,'\''2022-03-01 07:30:00'\'',0,'\''D-M-Y_24'\'','\''.'\'','\'''\'','\'','\'','\''SQ2WN4TMOCWJYU25'\'',1,1,2,'\''4_HOURS'\'',1,1,NULL,'\''a:1:{s:0:"";a:1:{s:15:"online-designer";a:1:{s:32:"dismissed_new_drag_and_drop_info";s:1:"1";}}}'\'',0);' -uroot redcap
+
+      - name: Configure web server
+        run: |
+          php_version=$(php -v | head -n 1 | cut -d " " -f 2 | cut -f1-2 -d".")
+          echo 'server {' > ~/webserver.config
+          echo '  listen 80 default_server;' >> ~/webserver.config
+          echo '  listen [::]:80 default_server;' >> ~/webserver.config
+          echo '  root '$HOME'/redcap/redcap;' >> ~/webserver.config
+          echo '  index index.php index.html index.htm;' >> ~/webserver.config
+          echo '  server_name _;' >> ~/webserver.config
+          echo '  location / {' >> ~/webserver.config
+          echo '    try_files $uri $uri/ =404;' >> ~/webserver.config
+          echo '  }' >> ~/webserver.config
+          echo '  location ~ \.php$ {' >> ~/webserver.config
+          echo '    include snippets/fastcgi-php.conf;' >> ~/webserver.config
+          echo '    fastcgi_pass unix:/run/php/php'$php_version'-fpm.sock;' >> ~/webserver.config
+          echo '  }' >> ~/webserver.config
+          echo '}' >> ~/webserver.config
+          sudo cp ~/webserver.config /etc/nginx/sites-available/default
+
+      - name: Add mailer script and sentEmails PHP page
+        run: |
+          echo '{"is_github":"1"}' > ~/sessionStorage
+          echo '' > ~/sentEmails
+          echo 'import json' > ~/mailer.py
+          echo 'import sys' >> ~/mailer.py
+          echo 'email = "," + json.dumps(sys.stdin.replace("\r\n","\n"))' >> ~/mailer.py
+          echo 'with open("'$HOME'/sentEmails","a") as file:' >> ~/mailer.py
+          echo '  file.write(email)' >> ~/mailer.py
+          echo 'sys.exit(0)' >> ~/mailer.py
+          echo '<?php' > ~/redcap/redcap/sentEmails.php
+          echo 'header("Content-Type: application/json");' >> ~/redcap/redcap/sentEmails.php
+          echo 'echo "[", substr(file_get_contents("'$HOME'/sentEmails"),1), "]";' >> ~/redcap/redcap/sentEmails.php
+
+      - name: Configure PHP
+        run: |
+          php_ini_path=$(php --ini | head -n 2 | tail -n 1 | sed "s/[^\/]*\//\//")
+          sudo sed -i "s/;\?sendmail_path =.*/sendmail_path = python3 \/home\/runner\/mailer.py/" $php_ini_path
+
+      - name: Start web server
+        run: |
+          sudo service nginx start
+
+      - name: Install PIL
+        run: |
+          pip3 install pillow
+
+      - name: Install pytest
+        run: |
+          pip3 install pytest
+          pip3 install pytest-json-report
+          pip3 install pytest-timeout
+
+      - name: Install selenium
+        run: |
+          pip3 install selenium
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install any composer dependencies
+        run: |
+          if [ -f "composer.lock" ]; then
+            composer install
+          fi
+
+      - name: Set web browser driver for tests
+        run: |
+          sed -i -e 's/self.driver = webdriver.\(Chrome\|Firefox\)()/self.driver = self.selectedBrowser/' ./tests/*.py
+          sed -i -e 's/print("ECHOSCREENSHOT")/print(self.driver.get_screenshot_as_base64())/' ./tests/*.py
+          sed -i -e 's/print("SETDESC:\(.*\)")/self.driver.setScreenshotDesc("\1")/' ./tests/*.py
+          sed -i -e 's/print("SAVEDESC:\(.*\)")/self.driver.saveDescription("\1")/' ./tests/*.py
+
+
+      - name: Configure pytest
+        run: |
+          # Import the required python modules.
+          echo 'import base64' > ./tests/conftest.py
+          echo 'from PIL import Image' >> ./tests/conftest.py
+          echo 'import pytest' >> ./tests/conftest.py
+          echo 'from selenium import webdriver' >> ./tests/conftest.py
+          echo 'from selenium.webdriver.common.by import By' >> ./tests/conftest.py
+          echo 'from selenium.common.exceptions import ElementClickInterceptedException' >> ./tests/conftest.py
+          echo 'from selenium.common.exceptions import ElementNotInteractableException' >> ./tests/conftest.py
+          echo 'from selenium.common.exceptions import NoSuchElementException' >> ./tests/conftest.py
+          echo 'import time' >> ./tests/conftest.py
+          #
+          #
+          # Extend the WebElement class:
+          #
+          echo 'class ExtendedWebElement():' >> ./tests/conftest.py
+          echo '  def __init__(self,obj):' >> ./tests/conftest.py
+          echo '    self.webElement = obj' >> ./tests/conftest.py
+          echo '  def __getattr__(self,name):' >> ./tests/conftest.py
+          echo '    return getattr(self.webElement,name)' >> ./tests/conftest.py
+          echo '  def getElementScreenshot(self,desc):' >> ./tests/conftest.py
+          echo '    global stepsData' >> ./tests/conftest.py
+          echo '    global stepDesc' >> ./tests/conftest.py
+          echo '    if stepDesc != None:' >> ./tests/conftest.py
+          echo '      desc = stepDesc' >> ./tests/conftest.py
+          echo '      stepDesc = None' >> ./tests/conftest.py
+          echo '    elem = self.webElement' >> ./tests/conftest.py
+          echo '    if elem.tag_name.lower() == "option":' >> ./tests/conftest.py
+          echo '      elem = elem.find_element(By.XPATH, "..")' >> ./tests/conftest.py
+          echo '    if elem.tag_name.lower() == "optgroup":' >> ./tests/conftest.py
+          echo '      elem = elem.find_element(By.XPATH, "..")' >> ./tests/conftest.py
+          echo '    try:' >> ./tests/conftest.py
+          echo '      windowW = int(self.parent.execute_script("return window.innerWidth"))' >> ./tests/conftest.py
+          echo '      windowH = int(self.parent.execute_script("return window.innerHeight"))' >> ./tests/conftest.py
+          echo '      attempt = 0' >> ./tests/conftest.py
+          echo '      while True:' >> ./tests/conftest.py
+          echo '        location = elem.location' >> ./tests/conftest.py
+          echo '        size = elem.size' >> ./tests/conftest.py
+          echo '        scroll = self.parent.execute_script("return {x:window.scrollX,y:window.scrollY}")' >> ./tests/conftest.py
+          echo '        x = int(location["x"]) - int(scroll["x"])' >> ./tests/conftest.py
+          echo '        y = int(location["y"]) - int(scroll["y"])' >> ./tests/conftest.py
+          echo '        w = int(size["width"])' >> ./tests/conftest.py
+          echo '        h = int(size["height"])' >> ./tests/conftest.py
+          echo '        if attempt > 10 or (x >= 0 and y >= 0 and x+w < windowW and y+h < windowH):' >> ./tests/conftest.py
+          echo '          break' >> ./tests/conftest.py
+          echo '        attempt += 1' >> ./tests/conftest.py
+          echo '        time.sleep(0.5)' >> ./tests/conftest.py
+          echo '        self.moveElementIntoView()' >> ./tests/conftest.py
+          echo '      self.parent.save_screenshot("'$HOME'/screenshot.png")' >> ./tests/conftest.py
+          echo '      if w > 525:' >> ./tests/conftest.py
+          echo '        w = 525' >> ./tests/conftest.py
+          echo '      if h > 300:' >> ./tests/conftest.py
+          echo '        h = 300' >> ./tests/conftest.py
+          echo '      with Image.open("'$HOME'/screenshot.png") as pil:' >> ./tests/conftest.py
+          echo '        windowW, windowH = pil.size' >> ./tests/conftest.py
+          echo '        if w < 525:' >> ./tests/conftest.py
+          echo '          x = x - ((525-w)/2)' >> ./tests/conftest.py
+          echo '          w = 525' >> ./tests/conftest.py
+          echo '          if x+w > windowW:' >> ./tests/conftest.py
+          echo '            x = windowW - w' >> ./tests/conftest.py
+          echo '          if x < 0:' >> ./tests/conftest.py
+          echo '            x = 0' >> ./tests/conftest.py
+          echo '        if h < 300:' >> ./tests/conftest.py
+          echo '          y = y - ((300-h)/2)' >> ./tests/conftest.py
+          echo '          h = 300' >> ./tests/conftest.py
+          echo '          if y+h > windowH:' >> ./tests/conftest.py
+          echo '            y = windowH - h' >> ./tests/conftest.py
+          echo '          if y < 0:' >> ./tests/conftest.py
+          echo '            y = 0' >> ./tests/conftest.py
+          echo '        pil = pil.crop((x, y, x+w, y+h))' >> ./tests/conftest.py
+          echo '        pil = pil.resize((350, 200))' >> ./tests/conftest.py
+          echo '        pil.save("'$HOME'/screenshot.png")' >> ./tests/conftest.py
+          echo '      with open("'$HOME'/screenshot.png", "rb") as file:' >> ./tests/conftest.py
+          echo '        image = file.read()' >> ./tests/conftest.py
+          echo '      image = base64.b64encode(image).decode("ascii")' >> ./tests/conftest.py
+          echo '    except:' >> ./tests/conftest.py
+          echo '      image = ""' >> ./tests/conftest.py
+          echo '    stepsData.append({"desc":desc,"img":image})' >> ./tests/conftest.py
+          echo '  def moveElementIntoView(self):' >> ./tests/conftest.py
+          echo '    self.parent.execute_script("let stX=window.scrollX;let stY=window.scrollY;let elem=arguments[0];if(elem.tagName.toLowerCase()=='\''option'\'')elem=elem.parentElement; if(elem.tagName.toLowerCase()=='\''optgroup'\'')elem=elem.parentElement;elem.scrollIntoView({block:\"nearest\",inline:\"nearest\"});if (window.scrollX>stX) window.scrollBy(25,0);else if (window.scrollX<stX) window.scrollBy(-25,0);if (window.scrollY>stY) window.scrollBy(0,25);else if (window.scrollY<stY) window.scrollBy(0,-25);elem.focus()",self.webElement)' >> ./tests/conftest.py
+          echo '  def click(self):' >> ./tests/conftest.py
+          echo '    self.moveElementIntoView()' >> ./tests/conftest.py
+          echo '    if self.webElement.tag_name.lower() == "option":' >> ./tests/conftest.py
+          echo '      desc = "Select \"" + self.webElement.text + "\""' >> ./tests/conftest.py
+          echo '    else:' >> ./tests/conftest.py
+          echo '      desc = "Click"' >> ./tests/conftest.py
+          echo '      if self.webElement.text != "":' >> ./tests/conftest.py
+          echo '        desc += " \"" + self.webElement.text + "\""' >> ./tests/conftest.py
+          echo '      elif self.webElement.tag_name.lower() == "input" and (self.webElement.get_attribute("type") == "submit" or self.webElement.get_attribute("type") == "button") and self.webElement.get_attribute("value") != "":' >> ./tests/conftest.py
+          echo '        desc += " \"" + self.webElement.get_attribute("value") + "\""' >> ./tests/conftest.py
+          echo '    screenshotAfter = self.webElement.tag_name.lower() == "option" or (self.webElement.tag_name.lower() == "input" and (self.webElement.get_attribute("type") == "radio" or self.webElement.get_attribute("type") == "checkbox"))' >> ./tests/conftest.py
+          echo '    if not screenshotAfter:' >> ./tests/conftest.py
+          echo '      self.getElementScreenshot(desc)' >> ./tests/conftest.py
+          echo '    for i in range(12):' >> ./tests/conftest.py
+          echo '      try:' >> ./tests/conftest.py
+          echo '        clickResult = self.webElement.click()' >> ./tests/conftest.py
+          echo '        if screenshotAfter:' >> ./tests/conftest.py
+          echo '          self.getElementScreenshot(desc)' >> ./tests/conftest.py
+          echo '        time.sleep(0.2)' >> ./tests/conftest.py
+          echo '        return clickResult' >> ./tests/conftest.py
+          echo '      except (ElementClickInterceptedException, ElementNotInteractableException):' >> ./tests/conftest.py
+          echo '        if i == 11:' >> ./tests/conftest.py
+          echo '          self.parent.execute_script("if(arguments[0].tagName.toLowerCase()==\"option\")arguments[0].selected=true;else arguments[0].click()",self.webElement)' >> ./tests/conftest.py
+          echo '          if screenshotAfter:' >> ./tests/conftest.py
+          echo '            self.getElementScreenshot(desc)' >> ./tests/conftest.py
+          echo '          time.sleep(2)' >> ./tests/conftest.py
+          echo '          return self.webElement' >> ./tests/conftest.py
+          echo '        self.moveElementIntoView()' >> ./tests/conftest.py
+          echo '        time.sleep(1)' >> ./tests/conftest.py
+          echo '  def find_element(self, by, value):' >> ./tests/conftest.py
+          echo '    return ExtendedWebElement(self.webElement.find_element(by, value))' >> ./tests/conftest.py
+          echo '  def send_keys(self, *keys_to_send):' >> ./tests/conftest.py
+          echo '    self.moveElementIntoView()' >> ./tests/conftest.py
+          echo '    if keys_to_send[0] == "ECHOSCREENSHOT":' >> ./tests/conftest.py
+          echo '      print(self.webElement.screenshot_as_base64)' >> ./tests/conftest.py
+          echo '      return self.webElement' >> ./tests/conftest.py
+          echo '    if keys_to_send[0] == "SAVESCREENSHOT":' >> ./tests/conftest.py
+          echo '      self.getElementScreenshot("")' >> ./tests/conftest.py
+          echo '      return self.webElement' >> ./tests/conftest.py
+          echo '    if keys_to_send[0][0:8] == "REPODIR/":' >> ./tests/conftest.py
+          echo '      keys_to_send = list(keys_to_send)' >> ./tests/conftest.py
+          echo '      keys_to_send[0] = "'$(pwd)'" + keys_to_send[0][7:]' >> ./tests/conftest.py
+          echo '      keys_to_send = tuple(keys_to_send)' >> ./tests/conftest.py
+          echo '      self.getElementScreenshot("Select file")' >> ./tests/conftest.py
+          echo '      return self.webElement.send_keys(*keys_to_send)' >> ./tests/conftest.py
+          echo '    self.parent.execute_script("arguments[0].value = arguments[1]",self.webElement,keys_to_send[0])' >> ./tests/conftest.py
+          echo '    self.getElementScreenshot("Type \"" + keys_to_send[0] + "\"")' >> ./tests/conftest.py
+          echo '    return self.webElement' >> ./tests/conftest.py
+          #
+          #
+          # Extend the browser driver class (this will be either Chrome or Firefox)
+          #
+          if [ "${{ matrix.browser }}" == "chrome" ]; then
+            echo 'class ExtendedBrowserDriver(webdriver.Chrome):' >> ./tests/conftest.py
+          fi
+          if [ "${{ matrix.browser }}" == "firefox" ]; then
+            echo 'class ExtendedBrowserDriver(webdriver.Firefox):' >> ./tests/conftest.py
+          fi
+          echo '  def setScreenshotDesc(self, desc):' >> ./tests/conftest.py
+          echo '    global stepDesc' >> ./tests/conftest.py
+          echo '    stepDesc = desc' >> ./tests/conftest.py
+          echo '  def saveDescription(self, desc):' >> ./tests/conftest.py
+          echo '    global stepsData' >> ./tests/conftest.py
+          echo '    global stepDesc' >> ./tests/conftest.py
+          echo '    stepDesc = None' >> ./tests/conftest.py
+          echo '    stepsData.append({"desc":desc,"img":""})' >> ./tests/conftest.py
+          echo '  def quit(self):' >> ./tests/conftest.py
+          echo '    sessionStorage = self.execute_script("return (function(){var list={};for(var i=0;i<sessionStorage.length;i++){list[sessionStorage.key(i)]=sessionStorage.getItem(sessionStorage.key(i))};return JSON.stringify(list)})()")' >> ./tests/conftest.py
+          echo '    with open("'$HOME'/sessionStorage", "w") as file:' >> ./tests/conftest.py
+          echo '      file.write(sessionStorage)' >> ./tests/conftest.py
+          echo '    return super().quit()' >> ./tests/conftest.py
+          echo '  def find_element(self,targetType,targetRef):' >> ./tests/conftest.py
+          echo '    for i in range(12):' >> ./tests/conftest.py
+          echo '      try:' >> ./tests/conftest.py
+          echo '        webElement = super().find_element(targetType,targetRef)' >> ./tests/conftest.py
+          echo '      except NoSuchElementException:' >> ./tests/conftest.py
+          echo '        if i == 11:' >> ./tests/conftest.py
+          echo '          raise' >> ./tests/conftest.py
+          echo '        time.sleep(1)' >> ./tests/conftest.py
+          echo '    return ExtendedWebElement(webElement)' >> ./tests/conftest.py
+          echo '  def find_elements(self,targetType,targetRef):' >> ./tests/conftest.py
+          echo '    listWebElements = super().find_elements(targetType,targetRef)' >> ./tests/conftest.py
+          echo '    for i in range(6):' >> ./tests/conftest.py
+          echo '      if len(listWebElements) > 0:' >> ./tests/conftest.py
+          echo '        return listWebElements' >> ./tests/conftest.py
+          echo '      time.sleep(1)' >> ./tests/conftest.py
+          echo '      listWebElements = super().find_elements(targetType,targetRef)' >> ./tests/conftest.py
+          echo '    return listWebElements' >> ./tests/conftest.py
+          echo '' >> ./tests/conftest.py
+          echo 'def pytest_runtest_setup(item):' >> ./tests/conftest.py
+          echo '  global stepsData' >> ./tests/conftest.py
+          echo '  global stepDesc' >> ./tests/conftest.py
+          echo '  global failScreenshot' >> ./tests/conftest.py
+          echo '  stepsData = []' >> ./tests/conftest.py
+          echo '  stepDesc = None' >> ./tests/conftest.py
+          echo '  failScreenshot = None' >> ./tests/conftest.py
+          if [ "${{ matrix.browser }}" == "chrome" ]; then
+            echo '  opts = webdriver.ChromeOptions()' >> ./tests/conftest.py
+            echo '  opts.add_argument("--headless=new")' >> ./tests/conftest.py
+            echo '  opts.add_argument("--window-size=1280,720")' >> ./tests/conftest.py
+          fi
+          if [ "${{ matrix.browser }}" == "firefox" ]; then
+            echo '  opts = webdriver.FirefoxOptions()' >> ./tests/conftest.py
+            echo '  opts.add_argument("--headless")' >> ./tests/conftest.py
+            echo '  opts.add_argument("--width=1280")' >> ./tests/conftest.py
+            echo '  opts.add_argument("--height=720")' >> ./tests/conftest.py
+          fi
+          echo '  item.cls.selectedBrowser = ExtendedBrowserDriver(options=opts)' >> ./tests/conftest.py
+          echo '  item.cls.selectedBrowser.get("http://127.0.0.1/")' >> ./tests/conftest.py
+          echo '  if item.cls.selectedBrowser.execute_script("return ($('\''#username'\'').length > 0 && $('\''#password'\'').length > 0)"):' >> ./tests/conftest.py
+          echo '    item.cls.selectedBrowser.find_element(By.ID, "username").send_keys("admin")' >> ./tests/conftest.py
+          echo '    item.cls.selectedBrowser.find_element(By.ID, "password").send_keys("abc123")' >> ./tests/conftest.py
+          echo '    item.cls.selectedBrowser.find_element(By.ID, "login_btn").click()' >> ./tests/conftest.py
+          echo '    stepsData = []' >> ./tests/conftest.py
+          echo '    time.sleep(1)' >> ./tests/conftest.py
+          echo '  elements = item.cls.selectedBrowser.find_elements(By.CSS_SELECTOR, "a[href*=\"logout=1\"]")' >> ./tests/conftest.py
+          echo '  assert len(elements) > 0' >> ./tests/conftest.py
+          echo '  with open("'$HOME'/sessionStorage","r") as file:' >> ./tests/conftest.py
+          echo '    item.cls.selectedBrowser.execute_script("(function(input){input=JSON.parse(input);var keys=Object.keys(input);keys.forEach(function(key){sessionStorage.setItem(key,input[key])})})(arguments[0])",file.read())' >> ./tests/conftest.py
+          echo '' >> ./tests/conftest.py
+          #
+          #
+          # Functions to save the steps/screenshots, and to handle failures.
+          #
+          echo '@pytest.hookimpl(optionalhook=True)' >> ./tests/conftest.py
+          echo 'def pytest_json_runtest_metadata(item,call):' >> ./tests/conftest.py
+          echo '  global stepsData' >> ./tests/conftest.py
+          echo '  global failScreenshot' >> ./tests/conftest.py
+          echo '  screenshot = ""' >> ./tests/conftest.py
+          echo '  if failScreenshot != None:' >> ./tests/conftest.py
+          echo '    screenshot = failScreenshot' >> ./tests/conftest.py
+          echo '  failScreenshot = None' >> ./tests/conftest.py
+          echo '  return {"stepsData":stepsData,"failScreenshot":screenshot}' >> ./tests/conftest.py
+          echo '' >> ./tests/conftest.py
+          echo 'def pytest_exception_interact(node,call,report):' >> ./tests/conftest.py
+          echo '  global failScreenshot' >> ./tests/conftest.py
+          echo '  if isinstance(node, pytest.Item) and report.failed:' >> ./tests/conftest.py
+          echo '    try:' >> ./tests/conftest.py
+          echo '      pngdata = node.cls.selectedBrowser.get_screenshot_as_png()' >> ./tests/conftest.py
+          echo '      with open("'$HOME'/fails/" + node.name + ".png","xb") as file:' >> ./tests/conftest.py
+          echo '        file.write(pngdata)' >> ./tests/conftest.py
+          echo '      with open("'$HOME'/fails/" + node.name + ".html","x") as file:' >> ./tests/conftest.py
+          echo '        file.write(node.cls.selectedBrowser.execute_script("return document.querySelector('\''html'\'').outerHTML"))' >> ./tests/conftest.py
+          echo '      with Image.open("'$HOME'/fails/" + node.name + ".png") as pil:' >> ./tests/conftest.py
+          echo '        windowW, windowH = pil.size' >> ./tests/conftest.py
+          echo '        w = int(windowW/2)' >> ./tests/conftest.py
+          echo '        h = int(windowH/2)' >> ./tests/conftest.py
+          echo '        pil = pil.resize((w, h))' >> ./tests/conftest.py
+          echo '        pil.save("'$HOME'/screenshot.png")' >> ./tests/conftest.py
+          echo '      with open("'$HOME'/screenshot.png", "rb") as file:' >> ./tests/conftest.py
+          echo '        pngdata = file.read()' >> ./tests/conftest.py
+          echo '      failScreenshot = base64.b64encode(pngdata).decode("ascii")' >> ./tests/conftest.py
+          echo '    except:' >> ./tests/conftest.py
+          echo '      pass' >> ./tests/conftest.py
+          echo '    with open("'$HOME'/fails/" + node.name + ".txt","x") as file:' >> ./tests/conftest.py
+          echo '      file.write(report.longreprtext)' >> ./tests/conftest.py
+          echo '' >> ./tests/conftest.py
+          mkdir ~/fails
+
+      - name: Perform initial actions
+        id: initial_actions
+        run: |
+          unit_name=""
+          external_save_url=""
+          external_save_data=""
+          # Look for the init.json file.
+          if [ -f "./tests/init.json" ]; then
+            # Determine the total number of initial actions.
+            initactions_total=$(jq '. | length' ./tests/init.json)
+            initactions_current=0
+            echo " "
+            echo "Found init.json, $initactions_total initial actions:"
+            # For each initial action...
+            while [ "$initactions_current" != "$initactions_total" ]
+            do
+              initactions_current=$((initactions_current+1))
+              initactions_action=$(jq -r '.[0].action' ./tests/init.json)
+              echo " "
+              echo " "
+              echo "Initial action $initactions_current/$initactions_total:"
+              # If a selenium action, run pytest/selenium on the specified python file.
+              if [ "$initactions_action" == "selenium" ]; then
+                initactions_file="./tests/$(jq -r '.[0].file' ./tests/init.json)"
+                if [ -f "$initactions_file" ]; then
+                  echo "Running pytest/selenium initial actions: $initactions_file"
+                  python3 -m pytest -rfEP --timeout=600 --timeout_method=thread "$initactions_file"
+                else
+                  echo "Could not find file: ./tests/$initactions_file"
+                fi
+              fi
+              # If an sql action, run each SQL command.
+              if [ "$initactions_action" == "sql" ]; then
+                echo "Running SQL..."
+                mysql -e "$(jq -r '.[0].sql[]? | . + ";"' ./tests/init.json)" -uroot redcap
+              fi
+              # If a module action, obtain the REDCap external module from the specified source.
+              # - If source = "this", the module is contained in the calling repository.
+              #   Simply copy the checked out repository files to a module directory within the
+              #   REDCap modules directory. Use the supplied module name and the version obtained
+              #   from pull request title or latest release title.
+              # - If source = "github", the module needs to be downloaded from a public repository
+              #   elsewhere on GitHub. Download the module from the specified repo using the release
+              #   version if specified (otherwise uses latest release).
+              if [ "$initactions_action" == "module" ]; then
+                initactions_source=$(jq -r '.[0].source' ./tests/init.json)
+                initactions_name=$(jq -r '.[0].name // ""' ./tests/init.json)
+                if [ "$initactions_source" == "this" ] && [ "$initactions_name" != "" ]; then
+                  unit_name="$initactions_name"
+                  echo "Installing external module (this repository)"
+                  cp -r ./. ~/redcap/redcap/modules/${initactions_name}_v${unit_version}/
+                  modid=$(mysql -e 'SELECT ifnull(max(external_module_id),0)+1 FROM redcap_external_modules;' -B --disable_column_names -uroot redcap)
+                  mysql -e 'INSERT INTO redcap_external_modules (external_module_id,directory_prefix) VALUES ('$modid','\'${initactions_name}\'');' -uroot redcap
+                  mysql -e 'INSERT INTO redcap_external_module_settings (external_module_id,`key`,`type`,`value`) VALUES ('$modid','\''version'\'','\''string'\'','\''v'${unit_version}\'');' -uroot redcap
+                fi
+                if [ "$initactions_source" == "github" ] && [ "$initactions_name" != "" ]; then
+                  echo "Installing external module (GitHub): $(jq -r '.[0].repo' ./tests/init.json)"
+                  mver=$(jq -r '.[0].version // ""' ./tests/init.json)
+                  if [ "$mver" == "" ]; then
+                    mver="latest"
+                  else
+                    mver="tags/$mver"
+                  fi
+                  echo "Release: $mver"
+                  curl -s -S -L \
+                    -H "Accept: application/vnd.github+json" \
+                    -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+                    -H "X-Github-Api-Version: 2022-11-28" \
+                    https://api.github.com/repos/$(jq -r '.[0].repo' ./tests/init.json)/releases/$mver \
+                    > ~/response.json
+                  tarball_url=$(jq -r '.tarball_url' ~/response.json)
+                  mver=$(jq -r '.tag_name' ~/response.json)
+                  mver=$(echo "$mver" | egrep -o '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
+                  rm ~/response.json
+                  echo "Downloading $tarball_url"
+                  curl -s -S -L \
+                    -H "Accept: application/vnd.github+json" \
+                    -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+                    -H "X-Github-Api-Version: 2022-11-28" \
+                    -o ~/module.tar.gz $tarball_url
+                  mkdir ~/redcap/redcap/modules/${initactions_name}_v$mver
+                  tar --directory=$HOME/redcap/redcap/modules/${initactions_name}_v$mver -xzf ~/module.tar.gz
+                  rm ~/module.tar.gz
+                  modid=$(mysql -e 'SELECT ifnull(max(external_module_id),0)+1 FROM redcap_external_modules;' -B --disable_column_names -uroot redcap)
+                  mysql -e 'INSERT INTO redcap_external_modules (external_module_id,directory_prefix) VALUES ('$modid','\'${initactions_name}\'');' -uroot redcap
+                  mysql -e 'INSERT INTO redcap_external_module_settings (external_module_id,`key`,`type`,`value`) VALUES ('$modid','\''version'\'','\''string'\'','\''v'$mver\'');' -uroot redcap
+                fi
+              fi
+              # If an external save action, get the URL and data structure.
+              if [ "$initactions_action" == "external-save" ]; then
+                echo "Setting external save URL/structure..."
+                external_save_url=$(jq -r '.[0].url // ""' ./tests/init.json)
+                external_save_data=$(jq -c '.[0].data // ""' ./tests/init.json)
+              fi
+              jq '.[1:]' ./tests/init.json > ./tests/init.json.tmp && mv ./tests/init.json.tmp ./tests/init.json
+            done
+          fi
+          if [ "$unit_name" == "" ]; then
+            if [ -f "./tests/name.txt" ]; then
+              unit_name=$(head -n 1 ./tests/name.txt)
+            fi
+          fi
+          echo "unit_name=$unit_name" >> $GITHUB_ENV
+          echo "unit_name=$unit_name" >> $GITHUB_OUTPUT
+          current_date=$(date -u +%F-%H-%M)
+          echo "current_date=$current_date" >> $GITHUB_ENV
+          echo "current_date=$current_date" >> $GITHUB_OUTPUT
+          echo "external_save_url=$external_save_url" >> $GITHUB_OUTPUT
+          echo "external_save_data=$external_save_data" >> $GITHUB_OUTPUT
+
+      - name: Run Tests
+        id: run_tests
+        run: |
+          echo comp_${{ matrix.redcap_version }}_${{ matrix.browser }}=1 >> $GITHUB_OUTPUT
+          python3 -m pytest -rfEP --timeout=600 --timeout_method=thread --json-report --json-report-file=$HOME/report.json ./tests/
+
+      - name: Get output from tests
+        id: get_output
+        if: (success() || failure())
+        run: |
+          if [ -f "$HOME/report.json" ]; then
+            jq '.tests[]|{file:(.keywords[]|select(endswith(".py")))}+.+{error:.call.longrepr,error_line:.call.crash.lineno}|del(.["nodeid","setup","teardown","keywords","call","lineno"])' ~/report.json | jq -s '.' > ~/report.json.tmp && mv ~/report.json.tmp ~/report.json
+          fi
+          echo ${{ matrix.redcap_version }}_version=${{ env.redcap_version }} >> $GITHUB_OUTPUT
+
+      - name: Save output to artifact
+        id: save_to_artifact
+        if: (success() || failure())
+        uses: actions/upload-artifact@v4
+        with:
+          name: ztemp_${{ matrix.redcap_version }}_${{ matrix.browser }}
+          path: ~/report.json
+          retention-days: 1
+
+      - name: Get artifact ID
+        id: get_artifact_id
+        if: (success() || failure())
+        env:
+          artifact_id: ${{ steps.save_to_artifact.outputs.artifact-id }}
+        run: |
+          if [ -f "$HOME/report.json" ]; then
+            echo tests_${{ matrix.redcap_version }}_${{ matrix.browser }}="$artifact_id" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Web server error output
+        if: failure()
+        run: cat /var/log/nginx/error.log
+
+      - name: Store data from failures as artifact
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tests_${{ env.unit_name }}_v${{ env.unit_version }}_rc${{ env.redcap_version }}_fails_${{ matrix.browser }}_${{ env.current_date }}
+          path: ~/fails/
+
+
+  output:
+    name: Produce Test Output
+    runs-on: ubuntu-latest
+    needs: [selenium]
+    if: (success() || failure()) && needs.selenium.outputs.comp_inst_chrome == '1' && needs.selenium.outputs.comp_inst_firefox == '1' && needs.selenium.outputs.tests_inst_chrome != '' && needs.selenium.outputs.tests_inst_firefox != ''
+    continue-on-error: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get test results from artifacts
+        uses: actions/download-artifact@v5
+        with:
+          pattern: ztemp_*
+          path: ~/selenium_outputs/
+          merge-multiple: false
+
+      - name: Extract unit name/version, REDCap version(s) and date
+        env:
+          inst_version: ${{ needs.selenium.outputs.inst_version }}
+          new_version: ${{ needs.selenium.outputs.new_version }}
+          unit_name: ${{ needs.selenium.outputs.unit_name }}
+          unit_version: ${{ needs.selenium.outputs.unit_version }}
+          current_date: ${{ needs.selenium.outputs.current_date }}
+        run: |
+          echo "inst_version=$inst_version" >> $GITHUB_ENV
+          echo "new_version=$new_version" >> $GITHUB_ENV
+          echo "unit_name=$unit_name" >> $GITHUB_ENV
+          echo "unit_version=$unit_version" >> $GITHUB_ENV
+          echo "current_date=$current_date" >> $GITHUB_ENV
+
+      - name: Extract test results
+        run: |
+          jq '.[]' ~/selenium_outputs/ztemp_inst_chrome/report.json > ~/tests_inst_chrome.json
+          jq '.[]' ~/selenium_outputs/ztemp_inst_firefox/report.json > ~/tests_inst_firefox.json
+          jq -s '.' ~/tests_inst_chrome.json ~/tests_inst_firefox.json | jq 'sort_by(.file,.outcome)|unique_by(.file)|.[]|{name:.file,expected:"",scenario:""}+.' > ~/tests_inst.json
+          if [ $new_version != "null" ] ; then
+            jq '.[]' ~/selenium_outputs/ztemp_new_chrome/report.json > ~/tests_new_chrome.json
+            jq '.[]' ~/selenium_outputs/ztemp_new_firefox/report.json > ~/tests_new_firefox.json
+            jq -s '.' ~/tests_new_chrome.json ~/tests_new_firefox.json | jq 'sort_by(.file,.outcome)|unique_by(.file)|.[]|{name:.file,expected:"",scenario:""}+.' > ~/tests_new.json
+          fi
+
+      - name: Get test details
+        run: |
+          if [ -f "./tests/details.json" ]; then
+            mv ~/tests_inst.json ~/tests_inst2.json
+            echo '{}' > ~/tests_details.json
+            jq '.[]' ./tests/details.json >> ~/tests_details.json
+            jq '.+{dtls:$dtls[]}|select(.file==.dtls.file or .dtls=={})|.+{name:(if .dtls.name==null then .name else .dtls.name end),expected:(if .dtls.expected==null then .expected else .dtls.expected end),scenario:(if .dtls.scenario==null then .scenario else .dtls.scenario end)}' --slurpfile dtls ~/tests_details.json ~/tests_inst2.json | jq -s '.' | jq 'sort_by(.file,(if .dtls=={} then 2 else 1 end))|unique_by(.file)|.[]|del(.dtls)' > ~/tests_inst.json
+            if [ ${{ env.new_version }} != "null" ]; then
+              mv ~/tests_new.json ~/tests_new2.json
+              jq '.+{dtls:$dtls[]}|select(.file==.dtls.file or .dtls=={})|.+{name:(if .dtls.name==null then .name else .dtls.name end),expected:(if .dtls.expected==null then .expected else .dtls.expected end),scenario:(if .dtls.scenario==null then .scenario else .dtls.scenario end)}' --slurpfile dtls ~/tests_details.json ~/tests_new2.json | jq -s '.' | jq 'sort_by(.file,(if .dtls=={} then 2 else 1 end))|unique_by(.file)|.[]|del(.dtls)' > ~/tests_new.json
+            fi
+          fi
+
+      - name: Create PDF files
+        env:
+          users_names: ${{ inputs.USERS_NAMES }}
+        run: |
+          mkdir ~/output
+          users_names='{'"$users_names"'}'
+          user_name="$((echo "$users_names" | jq -r '."${{ github.actor }}" // "${{ github.actor }}"' 2>/dev/null) || echo "${{ github.actor }}")"
+          test_date_time="$(echo "$current_date" | jq -r -R '.|split("-")|.[0]+"-"+.[1]+"-"+.[2]+" "+.[3]+":"+.[4]+" UTC"')"
+          touch ~/tests_inst.html
+          if [ -f "./tests/output_start.html" ]; then
+            cat ./tests/output_start.html | jq -r -R '.|split("[test-date-time]")|join("'"$test_date_time"'"|@html)|split("[unit-version]")|join("'"$unit_version"'"|@html)|split("[redcap-version]")|join("'"$inst_version"'"|@html)|split("[user-name]")|join("'"$user_name"'"|@html)|split("[unit-name]")|join("'"$unit_name"'"|@html)' >> ~/tests_inst.html
+          else
+            echo '<!DOCTYPE html>' >> ~/tests_inst.html
+            echo '<html><head><title>' >> ~/tests_inst.html
+            echo "$unit_name tests - version $unit_version - REDCap $inst_version" | jq -r -R '.|@html' >> ~/tests_inst.html
+            echo '</title><style type="text/css">@page{size:A4 portrait}th,td{border:solid 1px #000;padding:3px}td.num{text-align:right}pre{white-space:pre-wrap}.pass{color:#060}.fail{color:#f00;font-weight:bold}</style></head><body><h1>' >> ~/tests_inst.html
+            echo "$unit_name tests" | jq -r -R '.|@html' >> ~/tests_inst.html
+            echo '</h1><h2>' >> ~/tests_inst.html
+            echo "Version $unit_version - REDCap $inst_version" | jq -r -R '.|@html' >> ~/tests_inst.html
+            echo '</h2>' >> ~/tests_inst.html
+          fi
+          echo '<h3 class="hsummary">Test Summary</h3><table class="summary"><thead><tr><th class="num">Test<br>Number</th><th class="req">Test Requirement</th><th class="res">Expected Result</th><th class="out">Outcome</th></tr></thead><tbody>' >> ~/tests_inst.html
+          jq -r '"<tr><td class=\"num\">" + (.file|capture("(?<n>[1-9][0-9]*)")|.n) + "</td><td class=\"req\">" + (.name|@html) + "</td><td class=\"res\">" + (.expected // ""|@html) + "</td><td class=\"out " + (if .outcome=="passed" then "pass\">Pass" else "fail\">Fail" end) + "</td></tr>"' ~/tests_inst.json >> ~/tests_inst.html
+          echo '</tbody></table>' >> ~/tests_inst.html
+          jq -r '"<h3 class=\"htest\">" + (.file|capture("(?<n>[1-9][0-9]*)")|.n) + ".&nbsp; " + (.name|@html) + "</h3><table class=\"test\"><tbody><tr><th>Expected Result</th><td>" + (.expected // ""|@html) + "</td></tr><tr><th>Outcome</th><td>" + (if .outcome=="passed" then "<span class=\"pass\">Pass</span>" else "<span class=\"fail\">Fail</span>" end) + "</td></tr></tbody></table><table class=\"steps\"><tbody>" + (reduce .metadata.stepsData[] as $i (""; . + "<tr><td class=\"desc\"" + (if $i.img=="" then (" colspan=\"2\">" + ($i.desc|@html)) else (">" + ($i.desc|@html) + "</td><td class=\"img\"><img src=\"data:image/png;base64," + ($i.img|@html) + "\">") + "</td></tr>" end))) + (if .error==null then "" else ("<tr><td class=\"failinfo\" colspan=\"2\"><pre>" + (.error|@html) + "</pre>" + (if .metadata.failScreenshot=="" then "" else ("</td></tr><tr><td class=\"failimg\" colspan=\"2\"><img src=\"data:image/png;base64," + (.metadata.failScreenshot|@html) + "\">") end) + "</td></tr>") end) + "</tbody></table>"' ~/tests_inst.json >> ~/tests_inst.html
+          if [ -f "./tests/output_end.html" ]; then
+            cat ./tests/output_end.html | jq -r -R '.|split("[unit-version]")|join("'"$unit_version"'"|@html)|split("[redcap-version]")|join("'"$inst_version"'"|@html)|split("[unit-name]")|join("'"$unit_name"'"|@html)' >> ~/tests_inst.html
+          else
+            echo '</body></html>' >> ~/tests_inst.html
+          fi
+          google-chrome --headless --print-to-pdf=$HOME/output/tests_${unit_name}_v${unit_version}_rc${inst_version}.pdf --no-pdf-header-footer file://$HOME/tests_inst.html
+          if [ ${{ env.new_version }} != "null" ]; then
+            touch ~/tests_new.html
+            if [ -f "./tests/output_start.html" ]; then
+              cat ./tests/output_start.html | jq -r -R '.|split("[test-date-time]")|join("'"$test_date_time"'"|@html)|split("[unit-version]")|join("'"$unit_version"'"|@html)|split("[redcap-version]")|join("'"$new_version"'"|@html)|split("[user-name]")|join("'"$user_name"'"|@html)|split("[unit-name]")|join("'"$unit_name"'"|@html)' >> ~/tests_new.html
+            else
+              echo '<!DOCTYPE html>' >> ~/tests_new.html
+              echo '<html><head><title>' >> ~/tests_new.html
+              echo "$unit_name tests - version $unit_version - REDCap $new_version" | jq -r -R '.|@html' >> ~/tests_new.html
+              echo '</title><style type="text/css">@page{size:A4 portrait}th,td{border:solid 1px #000;padding:3px}td.num{text-align:right}pre{white-space:pre-wrap}.pass{color:#060}.fail{color:#f00;font-weight:bold}</style></head><body><h1>' >> ~/tests_new.html
+              echo "$unit_name tests" | jq -r -R '.|@html' >> ~/tests_new.html
+              echo '</h1><h2>' >> ~/tests_new.html
+              echo "Version $unit_version - REDCap $new_version" | jq -r -R '.|@html' >> ~/tests_new.html
+              echo '</h2>' >> ~/tests_new.html
+            fi
+            echo '<h3 class="hsummary">Test Summary</h3><table class="summary"><thead><tr><th class="num">Test<br>Number</th><th class="req">Test Requirement</th><th class="res">Expected Result</th><th class="out">Outcome</th></tr></thead><tbody>' >> ~/tests_new.html
+            jq -r '"<tr><td class=\"num\">" + (.file|capture("(?<n>[1-9][0-9]*)")|.n) + "</td><td class=\"req\">" + (.name|@html) + "</td><td class=\"res\">" + (.expected // ""|@html) + "</td><td class=\"out " + (if .outcome=="passed" then "pass\">Pass" else "fail\">Fail" end) + "</td></tr>"' ~/tests_new.json >> ~/tests_new.html
+            echo '</tbody></table>' >> ~/tests_new.html
+            jq -r '"<h3 class=\"htest\">" + (.file|capture("(?<n>[1-9][0-9]*)")|.n) + ".&nbsp; " + (.name|@html) + "</h3><table class=\"test\"><tbody><tr><th>Expected Result</th><td>" + (.expected // ""|@html) + "</td></tr><tr><th>Outcome</th><td>" + (if .outcome=="passed" then "<span class=\"pass\">Pass</span>" else "<span class=\"fail\">Fail</span>" end) + "</td></tr></tbody></table><table class=\"steps\"><tbody>" + (reduce .metadata.stepsData[] as $i (""; . + "<tr><td class=\"desc\"" + (if $i.img=="" then (" colspan=\"2\">" + ($i.desc|@html)) else (">" + ($i.desc|@html) + "</td><td class=\"img\"><img src=\"data:image/png;base64," + ($i.img|@html) + "\">") + "</td></tr>" end))) + (if .error==null then "" else ("<tr><td class=\"failinfo\" colspan=\"2\"><pre>" + (.error|@html) + "</pre>" + (if .metadata.failScreenshot=="" then "" else ("</td></tr><tr><td class=\"failimg\" colspan=\"2\"><img src=\"data:image/png;base64," + (.metadata.failScreenshot|@html) + "\">") end) + "</td></tr>") end) + "</tbody></table>"' ~/tests_new.json >> ~/tests_new.html
+            if [ -f "./tests/output_end.html" ]; then
+              cat ./tests/output_end.html | jq -r -R '.|split("[unit-version]")|join("'"$unit_version"'"|@html)|split("[redcap-version]")|join("'"$new_version"'"|@html)|split("[unit-name]")|join("'"$unit_name"'"|@html)' >> ~/tests_new.html
+            else
+              echo '</body></html>' >> ~/tests_new.html
+            fi
+            google-chrome --headless --print-to-pdf=$HOME/output/tests_${unit_name}_v${unit_version}_rc${new_version}.pdf file://$HOME/tests_new.html
+          fi
+
+      - name: Create CSV files
+        env:
+          users_names: ${{ inputs.USERS_NAMES }}
+        run: |
+          users_names='{'"$users_names"'}'
+          echo '"Functional Requirement Number","Functional Requirement","Expected Result","Tester Name","Date","Pass/Fail","Comments"' > ~/output/tests_${unit_name}_v${unit_version}_rc${inst_version}.csv
+          jq -r '[(.file|capture("(?<n>[1-9][0-9]*)")|.n),.name,.expected,"'"$((echo "$users_names" | jq -r '."${{ github.actor }}" // "${{ github.actor }}"' 2>/dev/null) || echo "${{ github.actor }}")"'",(now|strftime("%Y-%m-%d")),(if .outcome=="passed" then "Pass" else "Fail" end),(if .error==null then "" else .error end)] | @csv' ~/tests_inst.json >> ~/output/tests_${unit_name}_v${unit_version}_rc${inst_version}.csv
+          if [ ${{ env.new_version }} != "null" ]; then
+            echo '"Functional Requirement Number","Functional Requirement","Expected Result","Tester Name","Date","Pass/Fail","Comments"' > ~/output/tests_${unit_name}_v${unit_version}_rc${new_version}.csv
+            jq -r '[(.file|capture("(?<n>[1-9][0-9]*)")|.n),.name,.expected,"'"$((echo "$users_names" | jq -r '."${{ github.actor }}" // "${{ github.actor }}"' 2>/dev/null) || echo "${{ github.actor }}")"'",(now|strftime("%Y-%m-%d")),(if .outcome=="passed" then "Pass" else "Fail" end),(if .error==null then "" else .error end)] | @csv' ~/tests_inst.json >> ~/output/tests_${unit_name}_v${unit_version}_rc${new_version}.csv
+          fi
+
+      - name: Store test output as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tests_${{ env.unit_name }}_v${{ env.unit_version }}_${{ env.current_date }}
+          path: ~/output/
+
+      - name: Save PDF file to external location
+        if: needs.selenium.outputs.external_save_url != '' && needs.selenium.outputs.external_save_data != ''
+        env:
+          external_save_url: ${{ needs.selenium.outputs.external_save_url }}
+          external_save_data: ${{ needs.selenium.outputs.external_save_data }}
+          secret1: ${{ secrets.SECRET1 }}
+          secret2: ${{ secrets.SECRET2 }}
+        run: |
+          external_save_url=$(echo "$external_save_url" | jq -r -R '.|split("[secret-1]")|join("'"$secret1"'")|split("[secret-2]")|join("'"$secret2"'")')
+          base64 ~/output/tests_${unit_name}_v${unit_version}_rc${inst_version}.pdf > ~/external_save_data_pdf
+          echo "$external_save_data" | jq -r -R --rawfile pdf $HOME/external_save_data_pdf '.|split("[unit-version]")|join("'"$unit_version"'")|split("[redcap-version]")|join("'"$inst_version"'")|split("[secret-1]")|join("'"$secret1"'")|split("[secret-2]")|join("'"$secret2"'")|split("[pdf-inst]")|join($pdf)' > ~/external_save_data
+          curl -L -X POST \
+            -H "Content-Type: application/json" \
+            $external_save_url \
+            --data-binary "@$HOME/external_save_data"
+
