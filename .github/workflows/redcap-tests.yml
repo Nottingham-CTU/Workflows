@@ -356,6 +356,10 @@ jobs:
           echo '    except:' >> ./tests/conftest.py
           echo '      image = ""' >> ./tests/conftest.py
           echo '    stepsData.append({"desc":desc,"img":image})' >> ./tests/conftest.py
+          echo '    if capman != None:' >> ./tests/conftest.py
+          echo '      capman.suspend_global_capture()' >> ./tests/conftest.py
+          echo '      print("  > " + desc, flush=True)' >> ./tests/conftest.py
+          echo '      capman.resume_global_capture()' >> ./tests/conftest.py
           echo '  def moveElementIntoView(self):' >> ./tests/conftest.py
           echo '    self.parent.execute_script("let stX=window.scrollX;let stY=window.scrollY;let elem=arguments[0];if(elem.tagName.toLowerCase()=='\''option'\'')elem=elem.parentElement; if(elem.tagName.toLowerCase()=='\''optgroup'\'')elem=elem.parentElement;elem.scrollIntoView({block:\"nearest\",inline:\"nearest\"});if (window.scrollX>stX) window.scrollBy(25,0);else if (window.scrollX<stX) window.scrollBy(-25,0);if (window.scrollY>stY) window.scrollBy(0,25);else if (window.scrollY<stY) window.scrollBy(0,-25);elem.focus()",self.webElement)' >> ./tests/conftest.py
           echo '  def click(self):' >> ./tests/conftest.py
@@ -424,6 +428,10 @@ jobs:
           echo '    global stepDesc' >> ./tests/conftest.py
           echo '    stepDesc = None' >> ./tests/conftest.py
           echo '    stepsData.append({"desc":desc,"img":""})' >> ./tests/conftest.py
+          echo '    if capman != None:' >> ./tests/conftest.py
+          echo '      capman.suspend_global_capture()' >> ./tests/conftest.py
+          echo '      print("  > " + desc, flush=True)' >> ./tests/conftest.py
+          echo '      capman.resume_global_capture()' >> ./tests/conftest.py
           echo '  def quit(self):' >> ./tests/conftest.py
           echo '    sessionStorage = self.execute_script("return (function(){var list={};for(var i=0;i<sessionStorage.length;i++){list[sessionStorage.key(i)]=sessionStorage.getItem(sessionStorage.key(i))};return JSON.stringify(list)})()")' >> ./tests/conftest.py
           echo '    with open("'$HOME'/sessionStorage", "w") as file:' >> ./tests/conftest.py
@@ -446,14 +454,24 @@ jobs:
           echo '      time.sleep(1)' >> ./tests/conftest.py
           echo '      listWebElements = super().find_elements(targetType,targetRef)' >> ./tests/conftest.py
           echo '    return listWebElements' >> ./tests/conftest.py
+          echo '  def execute_script(self, script: str, *args):' >> ./tests/conftest.py
+          echo '    if script[:10] == "//SETDESC:":' >> ./tests/conftest.py
+          echo '      self.setScreenshotDesc(script[10:])' >> ./tests/conftest.py
+          echo '      return' >> ./tests/conftest.py
+          echo '    if script[:11] == "//SAVEDESC:":' >> ./tests/conftest.py
+          echo '      self.saveDescription(script[11:])' >> ./tests/conftest.py
+          echo '      return' >> ./tests/conftest.py
+          echo '    return super().execute_script(script, *args)' >> ./tests/conftest.py
           echo '' >> ./tests/conftest.py
           echo 'def pytest_runtest_setup(item):' >> ./tests/conftest.py
           echo '  global stepsData' >> ./tests/conftest.py
           echo '  global stepDesc' >> ./tests/conftest.py
           echo '  global failScreenshot' >> ./tests/conftest.py
+          echo '  global capman' >> ./tests/conftest.py
           echo '  stepsData = []' >> ./tests/conftest.py
           echo '  stepDesc = None' >> ./tests/conftest.py
           echo '  failScreenshot = None' >> ./tests/conftest.py
+          echo '  capman = None' >> ./tests/conftest.py
           if [ "${{ matrix.browser }}" == "chrome" ]; then
             echo '  opts = webdriver.ChromeOptions()' >> ./tests/conftest.py
             echo '  opts.add_argument("--headless=new")' >> ./tests/conftest.py
@@ -477,6 +495,13 @@ jobs:
           echo '  assert len(elements) > 0' >> ./tests/conftest.py
           echo '  with open("'$HOME'/sessionStorage","r") as file:' >> ./tests/conftest.py
           echo '    item.cls.selectedBrowser.execute_script("(function(input){input=JSON.parse(input);var keys=Object.keys(input);keys.forEach(function(key){sessionStorage.setItem(key,input[key])})})(arguments[0])",file.read())' >> ./tests/conftest.py
+          echo '' >> ./tests/conftest.py
+          echo 'def pytest_runtest_call(item):' >> ./tests/conftest.py
+          echo '  global capman' >> ./tests/conftest.py
+          echo '  capman = item.config.pluginmanager.getplugin("capturemanager")' >> ./tests/conftest.py
+          echo '  capman.suspend_global_capture()' >> ./tests/conftest.py
+          echo '  print(" ", flush=True)' >> ./tests/conftest.py
+          echo '  capman.resume_global_capture()' >> ./tests/conftest.py
           echo '' >> ./tests/conftest.py
           #
           #
@@ -600,6 +625,12 @@ jobs:
                   mkdir ~/redcap/redcap/modules/${initactions_name}_v$mver
                   tar --directory=$HOME/redcap/redcap/modules/${initactions_name}_v$mver -xzf ~/module.tar.gz
                   rm ~/module.tar.gz
+                  if [ -f "$HOME/redcap/redcap/modules/${initactions_name}_v$mver/composer.lock" ]; then
+                    prevDir=$(pwd)
+                    cd "$HOME/redcap/redcap/modules/${initactions_name}_v$mver"
+                    composer install
+                    cd "$prevDir"
+                  fi
                   modid=$(mysql -e 'SELECT ifnull(max(external_module_id),0)+1 FROM redcap_external_modules;' -B --disable_column_names -uroot redcap)
                   mysql -e 'INSERT INTO redcap_external_modules (external_module_id,directory_prefix) VALUES ('$modid','\'${initactions_name}\'');' -uroot redcap
                   mysql -e 'INSERT INTO redcap_external_module_settings (external_module_id,`key`,`type`,`value`) VALUES ('$modid','\''version'\'','\''string'\'','\''v'$mver\'');' -uroot redcap
@@ -699,6 +730,10 @@ jobs:
           unit_version: ${{ needs.selenium.outputs.unit_version }}
           current_date: ${{ needs.selenium.outputs.current_date }}
         run: |
+          #
+          if [ "$new_version" == "" ]; then
+            new_version="null"
+          fi
           echo "inst_version=$inst_version" >> $GITHUB_ENV
           echo "new_version=$new_version" >> $GITHUB_ENV
           echo "unit_name=$unit_name" >> $GITHUB_ENV
@@ -710,7 +745,7 @@ jobs:
           jq '.[]' ~/selenium_outputs/ztemp_inst_chrome/report.json > ~/tests_inst_chrome.json
           jq '.[]' ~/selenium_outputs/ztemp_inst_firefox/report.json > ~/tests_inst_firefox.json
           jq -s '.' ~/tests_inst_chrome.json ~/tests_inst_firefox.json | jq 'sort_by(.file,.outcome)|unique_by(.file)|.[]|{name:.file,expected:"",scenario:""}+.' > ~/tests_inst.json
-          if [ $new_version != "null" ] ; then
+          if [ "$new_version" != "null" ] ; then
             jq '.[]' ~/selenium_outputs/ztemp_new_chrome/report.json > ~/tests_new_chrome.json
             jq '.[]' ~/selenium_outputs/ztemp_new_firefox/report.json > ~/tests_new_firefox.json
             jq -s '.' ~/tests_new_chrome.json ~/tests_new_firefox.json | jq 'sort_by(.file,.outcome)|unique_by(.file)|.[]|{name:.file,expected:"",scenario:""}+.' > ~/tests_new.json
@@ -723,7 +758,7 @@ jobs:
             echo '{}' > ~/tests_details.json
             jq '.[]' ./tests/details.json >> ~/tests_details.json
             jq '.+{dtls:$dtls[]}|select(.file==.dtls.file or .dtls=={})|.+{name:(if .dtls.name==null then .name else .dtls.name end),expected:(if .dtls.expected==null then .expected else .dtls.expected end),scenario:(if .dtls.scenario==null then .scenario else .dtls.scenario end)}' --slurpfile dtls ~/tests_details.json ~/tests_inst2.json | jq -s '.' | jq 'sort_by(.file,(if .dtls=={} then 2 else 1 end))|unique_by(.file)|.[]|del(.dtls)' > ~/tests_inst.json
-            if [ ${{ env.new_version }} != "null" ]; then
+            if [ "$new_version" != "null" ]; then
               mv ~/tests_new.json ~/tests_new2.json
               jq '.+{dtls:$dtls[]}|select(.file==.dtls.file or .dtls=={})|.+{name:(if .dtls.name==null then .name else .dtls.name end),expected:(if .dtls.expected==null then .expected else .dtls.expected end),scenario:(if .dtls.scenario==null then .scenario else .dtls.scenario end)}' --slurpfile dtls ~/tests_details.json ~/tests_new2.json | jq -s '.' | jq 'sort_by(.file,(if .dtls=={} then 2 else 1 end))|unique_by(.file)|.[]|del(.dtls)' > ~/tests_new.json
             fi
@@ -760,7 +795,7 @@ jobs:
             echo '</body></html>' >> ~/tests_inst.html
           fi
           google-chrome --headless --print-to-pdf=$HOME/output/tests_${unit_name}_v${unit_version}_rc${inst_version}.pdf --no-pdf-header-footer file://$HOME/tests_inst.html
-          if [ ${{ env.new_version }} != "null" ]; then
+          if [ "$new_version" != "null" ]; then
             touch ~/tests_new.html
             if [ -f "./tests/output_start.html" ]; then
               cat ./tests/output_start.html | jq -r -R '.|split("[test-date-time]")|join("'"$test_date_time"'"|@html)|split("[unit-version]")|join("'"$unit_version"'"|@html)|split("[redcap-version]")|join("'"$new_version"'"|@html)|split("[user-name]")|join("'"$user_name"'"|@html)|split("[unit-name]")|join("'"$unit_name"'"|@html)' >> ~/tests_new.html
@@ -793,7 +828,7 @@ jobs:
           users_names='{'"$users_names"'}'
           echo '"Functional Requirement Number","Functional Requirement","Expected Result","Tester Name","Date","Pass/Fail","Comments"' > ~/output/tests_${unit_name}_v${unit_version}_rc${inst_version}.csv
           jq -r '[(.file|capture("(?<n>[1-9][0-9]*)")|.n),.name,.expected,"'"$((echo "$users_names" | jq -r '."${{ github.actor }}" // "${{ github.actor }}"' 2>/dev/null) || echo "${{ github.actor }}")"'",(now|strftime("%Y-%m-%d")),(if .outcome=="passed" then "Pass" else "Fail" end),(if .error==null then "" else .error end)] | @csv' ~/tests_inst.json >> ~/output/tests_${unit_name}_v${unit_version}_rc${inst_version}.csv
-          if [ ${{ env.new_version }} != "null" ]; then
+          if [ "$new_version" != "null" ]; then
             echo '"Functional Requirement Number","Functional Requirement","Expected Result","Tester Name","Date","Pass/Fail","Comments"' > ~/output/tests_${unit_name}_v${unit_version}_rc${new_version}.csv
             jq -r '[(.file|capture("(?<n>[1-9][0-9]*)")|.n),.name,.expected,"'"$((echo "$users_names" | jq -r '."${{ github.actor }}" // "${{ github.actor }}"' 2>/dev/null) || echo "${{ github.actor }}")"'",(now|strftime("%Y-%m-%d")),(if .outcome=="passed" then "Pass" else "Fail" end),(if .error==null then "" else .error end)] | @csv' ~/tests_inst.json >> ~/output/tests_${unit_name}_v${unit_version}_rc${new_version}.csv
           fi
@@ -815,7 +850,7 @@ jobs:
           external_save_url=$(echo "$external_save_url" | jq -r -R '.|split("[secret-1]")|join("'"$secret1"'")|split("[secret-2]")|join("'"$secret2"'")')
           base64 ~/output/tests_${unit_name}_v${unit_version}_rc${inst_version}.pdf > ~/external_save_data_pdf
           echo "$external_save_data" | jq -r -R --rawfile pdf $HOME/external_save_data_pdf '.|split("[unit-version]")|join("'"$unit_version"'")|split("[redcap-version]")|join("'"$inst_version"'")|split("[secret-1]")|join("'"$secret1"'")|split("[secret-2]")|join("'"$secret2"'")|split("[pdf-inst]")|join($pdf)' > ~/external_save_data
-          curl -L -X POST \
+          curl --fail-with-body -L -X POST \
             -H "Content-Type: application/json" \
             $external_save_url \
             --data-binary "@$HOME/external_save_data"
