@@ -68,6 +68,12 @@ jobs:
           echo '$db_ssl_key = ""; $db_ssl_cert = ""; $db_ssl_ca = ""; $db_ssl_capath = null; $db_ssl_cipher = null; $db_ssl_verify_server_cert = false;' >> ~/redcap/redcap/database.php
           echo '$salt = "abc123";' >> ~/redcap/redcap/database.php
 
+      - name: Upgrade PHP
+        run: |
+          package="php$(php -v | head -n 1 | cut -d " " -f 2 | cut -f1-2 -d".")"
+          sudo add-apt-repository ppa:ondrej/php
+          sudo apt-get update && sudo apt-get install --only-upgrade "$package"
+
       - name: Start MySQL
         run: sudo /etc/init.d/mysql start
 
