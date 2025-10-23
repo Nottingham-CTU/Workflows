@@ -372,6 +372,14 @@ jobs:
           echo '        desc += " \"" + self.webElement.text + "\""' >> ./tests/conftest.py
           echo '      elif self.webElement.tag_name.lower() == "input" and (self.webElement.get_attribute("type") == "submit" or self.webElement.get_attribute("type") == "button") and self.webElement.get_attribute("value") != "":' >> ./tests/conftest.py
           echo '        desc += " \"" + self.webElement.get_attribute("value") + "\""' >> ./tests/conftest.py
+          echo '      elif self.webElement.tag_name.lower() == "img" and self.webElement.get_attribute("alt") != "":' >> ./tests/conftest.py
+          echo '        desc += " \"" + self.webElement.get_attribute("alt") + "\""' >> ./tests/conftest.py
+          echo '      elif self.webElement.find_element(By.XPATH, "..").text != "":' >> ./tests/conftest.py
+          echo '        desc += " \"" + self.webElement.find_element(By.XPATH, "..").text + "\""' >> ./tests/conftest.py
+          echo '      elif self.webElement.find_element(By.XPATH, "../..").text != "":' >> ./tests/conftest.py
+          echo '        desc += " \"" + self.webElement.find_element(By.XPATH, "../..").text + "\""' >> ./tests/conftest.py
+          echo '      elif self.webElement.find_element(By.XPATH, "../../..").text != "":' >> ./tests/conftest.py
+          echo '        desc += " \"" + self.webElement.find_element(By.XPATH, "../../..").text + "\""' >> ./tests/conftest.py
           echo '    screenshotAfter = self.webElement.tag_name.lower() == "option" or (self.webElement.tag_name.lower() == "input" and (self.webElement.get_attribute("type") == "radio" or self.webElement.get_attribute("type") == "checkbox"))' >> ./tests/conftest.py
           echo '    if not screenshotAfter:' >> ./tests/conftest.py
           echo '      self.getElementScreenshot(desc)' >> ./tests/conftest.py

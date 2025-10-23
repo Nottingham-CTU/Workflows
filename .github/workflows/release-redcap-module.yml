@@ -56,13 +56,13 @@ jobs:
               jq '.[1:]' ./tests/init.json > ./tests/init.json.tmp && mv ./tests/init.json.tmp ./tests/init.json
             done
           fi
-          if [ $module_dirname == "" ] && [ -f "./tests/name.txt" ]; then
+          if [ "$module_dirname" == "" ] && [ -f "./tests/name.txt" ]; then
             module_dirname=$(head -n 1 ./tests/name.txt)
           fi
-          if [ $module_dirname == "" ] && [ -f "./tests/dirname.txt" ]; then
+          if [ "$module_dirname" == "" ] && [ -f "./tests/dirname.txt" ]; then
             module_dirname=$(head -n 1 ./tests/dirname.txt)
           fi
-          if [ $module_dirname == "" ]; then
+          if [ "$module_dirname" == "" ]; then
             exit 1
           fi
           echo "module_dirname=$module_dirname" >> $GITHUB_ENV
