@@ -2,12 +2,16 @@
 
 name: REDCap External Module Security Scan
 
+# Controls when the workflow will run
 on:
   workflow_call:
     inputs:
       RC_COMMUNITY_USERNAME:
         type: string
         required: true
+      RC_SCAN_VERSION:
+        type: string
+        required: false
       RC_SYSTEM_HOOKS:
         type: boolean
         default: false
@@ -23,11 +27,18 @@ jobs:
 
     steps:
       - name: Get latest REDCap version number
+        env:
+          redcap_scan_version: ${{ inputs.RC_SCAN_VERSION }}
         run: |
-          wget -O ~/redcap_version.json https://redcap.vumc.org/plugins/redcap_consortium/versions.php
-          redcap_version=$(jq -r '.latest_version' ~/redcap_version.json)
-          echo "redcap_version=$redcap_version" >> $GITHUB_ENV
-          rm ~/redcap_version.json
+          scan_version=$(echo "$redcap_scan_version" | egrep -o '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
+          if [[ ${#scan_version} < 5 ]]; then
+            wget -O ~/redcap_version.json https://redcap.vumc.org/plugins/redcap_consortium/versions.php
+            redcap_version=$(jq -r '.latest_version' ~/redcap_version.json)
+            echo "redcap_version=$redcap_version" >> $GITHUB_ENV
+            rm ~/redcap_version.json
+          else
+            redcap_version="$scan_version"
+          fi
 
       - name: Restore REDCap zip for version ${{ env.redcap_version }}
         id: cache-redcap
@@ -38,8 +49,11 @@ jobs:
 
       - name: Download latest REDCap version
         if: steps.cache-redcap.outputs.cache-hit != 'true'
+        env:
+          rcc_user: ${{ inputs.RC_COMMUNITY_USERNAME }}
+          rcc_pass: ${{ secrets.RC_COMMUNITY_PASSWORD }}
         run: |
-          wget -q --post-data="username=${{ inputs.RC_COMMUNITY_USERNAME }}&password=${{ secrets.RC_COMMUNITY_PASSWORD }}&version=${{ env.redcap_version }}&install=1" -O ~/redcap.zip https://redcap.vumc.org/plugins/redcap_consortium/versions.php
+          wget -q --post-data="version=${redcap_version}&install=1&username=${rcc_user}&password=${rcc_pass}" -O ~/redcap.zip https://redcap.vumc.org/plugins/redcap_consortium/versions.php
 
       - name: Check REDCap download size
         if: steps.cache-redcap.outputs.cache-hit != 'true'

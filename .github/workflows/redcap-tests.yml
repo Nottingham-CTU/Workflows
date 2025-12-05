@@ -10,10 +10,14 @@ on:
         required: true
       RC_INSTALLED_VERSION:
         type: string
-        required: true
+        required: false
       USERS_NAMES:
         type: string
         required: false
+      SKIP_NEW_RC:
+        type: boolean
+        required: false
+        default: false
     secrets:
       RC_COMMUNITY_PASSWORD:
         required: true
@@ -47,7 +51,7 @@ jobs:
         redcap_version: [inst, new]
         browser: [chrome, firefox]
         exclude:
-          - redcap_version: ${{ github.event_name != 'pull_request' && 'new' }}
+          - redcap_version: ${{ ( github.event_name != 'pull_request' || inputs.RC_INSTALLED_VERSION == '' || inputs.SKIP_NEW_RC ) && 'new' }}
       fail-fast: false
 
     steps:
@@ -56,6 +60,7 @@ jobs:
         env:
           pullrequest_title: ${{ github.event.pull_request.title }}
         run: |
+          # Get the version of the unit from the pull request title, or latest release if not triggered by pull request.
           if [ ${#pullrequest_title} -lt 5 ]; then
             curl -L -H "Accept: application/vnd.github+json" \
                  -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
@@ -74,15 +79,22 @@ jobs:
           fi
 
       - name: Get REDCap version
+        env:
+          rc_installed_version: ${{ inputs.RC_INSTALLED_VERSION }}
         run: |
-          if [ "${{ matrix.redcap_version }}" == "inst" ] && [ "${{ inputs.RC_INSTALLED_VERSION }}" != "" ]; then
-            echo "redcap_version=${{ inputs.RC_INSTALLED_VERSION }}" >> $GITHUB_ENV
+          # Get the version of REDCap to load.
+          if [ "${{ matrix.redcap_version }}" == "inst" ] && [ "$rc_installed_version" != "" ]; then
+            redcap_version="$rc_installed_version"
           else
             wget -O ~/redcap_version.json https://redcap.vumc.org/plugins/redcap_consortium/versions.php
             redcap_version=$(jq -r '.latest_version' ~/redcap_version.json)
-            echo "redcap_version=$redcap_version" >> $GITHUB_ENV
             rm ~/redcap_version.json
           fi
+          redcap_version=$(echo $redcap_version | egrep -o '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
+          if [[ ${#redcap_version} < 5 ]]; then
+            exit 1
+          fi
+          echo "redcap_version=$redcap_version" >> $GITHUB_ENV
 
       - name: Check for cached REDCap zip for version ${{ env.redcap_version }}
         id: check-cache-redcap
@@ -105,12 +117,16 @@ jobs:
 
       - name: Download REDCap version ${{ env.redcap_version }}
         if: steps.cache-redcap.outputs.cache-hit != 'true'
+        env:
+          rcc_user: ${{ inputs.RC_COMMUNITY_USERNAME }}
+          rcc_pass: ${{ secrets.RC_COMMUNITY_PASSWORD }}
         run: |
-          wget -q --post-data="username=${{ inputs.RC_COMMUNITY_USERNAME }}&password=${{ secrets.RC_COMMUNITY_PASSWORD }}&version=${{ env.redcap_version }}&install=1" -O ~/redcap.zip https://redcap.vumc.org/plugins/redcap_consortium/versions.php
+          wget -q --post-data="version=${redcap_version}&install=1&username=${rcc_user}&password=${rcc_pass}" -O ~/redcap.zip https://redcap.vumc.org/plugins/redcap_consortium/versions.php
 
       - name: Check REDCap download size
         if: steps.cache-redcap.outputs.cache-hit != 'true'
         run: |
+          # If download size less than 10MB, assume an error has occurred and exit.
           if [ $(stat -c%s ~/redcap.zip) -lt 10000000 ]; then
             exit 1
           fi
@@ -137,6 +153,7 @@ jobs:
 
       - name: Start MySQL and create REDCap database
         run: |
+          # Start MySQL and create REDCap database.
           export MYSQL_PWD="root"
           echo "MYSQL_PWD=$MYSQL_PWD" >> $GITHUB_ENV
           sudo /etc/init.d/mysql start
@@ -144,6 +161,7 @@ jobs:
 
       - name: Run installation SQL files
         run: |
+          # Load the SQL files in Resources/sql.
           mysql -uroot redcap < ~/redcap/redcap/redcap_v${{ env.redcap_version }}/Resources/sql/install.sql
           mysql -uroot redcap < ~/redcap/redcap/redcap_v${{ env.redcap_version }}/Resources/sql/install_data.sql
           for sql_file in $(ls -v ~/redcap/redcap/redcap_v${{ env.redcap_version }}/Resources/sql/create_demo_db*.sql); do mysql -uroot redcap < $sql_file; done
@@ -152,6 +170,7 @@ jobs:
 
       - name: Set up REDCap configuration
         run: |
+          # Set the values in the redcap_config table.
           mysql -e 'UPDATE redcap_config SET value = '\''table'\'' WHERE field_name = '\''auth_meth_global'\'';' -uroot redcap
           mysql -e 'UPDATE redcap_config SET `value` = '\''120'\'' WHERE `field_name` = '\''autologout_timer'\'';' -uroot redcap
           mysql -e 'UPDATE redcap_config SET `value` = '\''1'\'' WHERE `field_name` = '\''is_development_server'\'';' -uroot redcap
@@ -200,14 +219,17 @@ jobs:
 
       - name: Set up user accounts
         run: |
+          # Create user accounts 'admin', 'user1', 'user2', 'user3', 'user4', 'user5'.
           mysql -e 'INSERT INTO redcap_auth (`username`,`password`,`password_salt`,`legacy_hash`,`temp_pwd`,`password_question`,`password_answer`, `password_question_reminder`,`password_reset_key`) VALUES ('\''admin'\'',md5('\''abc123abc123'\''),'\''abc123'\'',1,0,NULL,NULL,'\''2099-12-31 23:59:59'\'',NULL),('\''user1'\'',md5('\''abc123abc123'\''),'\''abc123'\'',1,0,NULL,NULL,'\''2099-12-31 23:59:59'\'',NULL),('\''user2'\'',md5('\''abc123abc123'\''),'\''abc123'\'',1,0,NULL,NULL,'\''2099-12-31 23:59:59'\'',NULL),('\''user3'\'',md5('\''abc123abc123'\''),'\''abc123'\'',1,0,NULL,NULL,'\''2099-12-31 23:59:59'\'',NULL),('\''user4'\'',md5('\''abc123abc123'\''),'\''abc123'\'',1,0,NULL,NULL,'\''2099-12-31 23:59:59'\'',NULL),('\''user5'\'',md5('\''abc123abc123'\''),'\''abc123'\'',1,0,NULL,NULL,'\''2099-12-31 23:59:59'\'',NULL);' -uroot redcap
           mysql -e 'UPDATE redcap_user_information SET super_user = 0, account_manager = 0, access_system_config = 0, access_system_upgrade = 0, access_external_module_install = 0, admin_rights = 0, access_admin_dashboards = 0 WHERE ui_id = 1;' -uroot redcap
           mysql -e 'INSERT INTO redcap_user_information (`username`,`user_email`,`user_firstname`,`user_lastname`,`super_user`,`account_manager`,`access_system_config`,`access_system_upgrade`,`access_external_module_install`,`admin_rights`,`access_admin_dashboards`,`user_creation`,`allow_create_db`,`datetime_format`,`number_format_decimal`,`number_format_thousands_sep`,`csv_delimiter`,`two_factor_auth_secret`,`display_on_email_users`,`two_factor_auth_twilio_prompt_phone`,`two_factor_auth_code_expiration`,`messaging_email_preference`,`messaging_email_urgent_all`,`messaging_email_general_system`,`messaging_email_queue_time`,`ui_state`,`api_token_auto_request`) VALUES ('\''admin'\'','\''admin@example.com'\'','\''REDCap'\'','\''Admin'\'',1,1,1,1,1,1,1,'\''2022-03-01 07:30:00'\'',1,'\''D-M-Y_24'\'','\''.'\'','\'''\'','\'','\'','\''Z3G3FXFPTDFJRTPT'\'',1,1,2,'\''4_HOURS'\'',1,1,NULL,'\''a:1:{s:0:"";a:1:{s:15:"online-designer";a:1:{s:32:"dismissed_new_drag_and_drop_info";s:1:"1";}}}'\'',0),('\''user1'\'','\''user1@example.com'\'','\''REDCap'\'','\''User1'\'',0,0,0,0,0,0,0,'\''2022-03-01 07:30:00'\'',0,'\''D-M-Y_24'\'','\''.'\'','\'''\'','\'','\'','\''SQ2WN4TMOCWJYU25'\'',1,1,2,'\''4_HOURS'\'',1,1,NULL,'\''a:1:{s:0:"";a:1:{s:15:"online-designer";a:1:{s:32:"dismissed_new_drag_and_drop_info";s:1:"1";}}}'\'',0),('\''user2'\'','\''user2@example.com'\'','\''REDCap'\'','\''User2'\'',0,0,0,0,0,0,0,'\''2022-03-01 07:30:00'\'',0,'\''D-M-Y_24'\'','\''.'\'','\'''\'','\'','\'','\''SQ2WN4TMOCWJYU25'\'',1,1,2,'\''4_HOURS'\'',1,1,NULL,'\''a:1:{s:0:"";a:1:{s:15:"online-designer";a:1:{s:32:"dismissed_new_drag_and_drop_info";s:1:"1";}}}'\'',0),('\''user3'\'','\''user3@example.com'\'','\''REDCap'\'','\''User3'\'',0,0,0,0,0,0,0,'\''2022-03-01 07:30:00'\'',0,'\''D-M-Y_24'\'','\''.'\'','\'''\'','\'','\'','\''SQ2WN4TMOCWJYU25'\'',1,1,2,'\''4_HOURS'\'',1,1,NULL,'\''a:1:{s:0:"";a:1:{s:15:"online-designer";a:1:{s:32:"dismissed_new_drag_and_drop_info";s:1:"1";}}}'\'',0),('\''user4'\'','\''user4@example.com'\'','\''REDCap'\'','\''User4'\'',0,0,0,0,0,0,0,'\''2022-03-01 07:30:00'\'',0,'\''D-M-Y_24'\'','\''.'\'','\'''\'','\'','\'','\''SQ2WN4TMOCWJYU25'\'',1,1,2,'\''4_HOURS'\'',1,1,NULL,'\''a:1:{s:0:"";a:1:{s:15:"online-designer";a:1:{s:32:"dismissed_new_drag_and_drop_info";s:1:"1";}}}'\'',0),('\''user5'\'','\''user5@example.com'\'','\''REDCap'\'','\''User5'\'',0,0,0,0,0,0,0,'\''2022-03-01 07:30:00'\'',0,'\''D-M-Y_24'\'','\''.'\'','\'''\'','\'','\'','\''SQ2WN4TMOCWJYU25'\'',1,1,2,'\''4_HOURS'\'',1,1,NULL,'\''a:1:{s:0:"";a:1:{s:15:"online-designer";a:1:{s:32:"dismissed_new_drag_and_drop_info";s:1:"1";}}}'\'',0);' -uroot redcap
 
       - name: Configure web server
         run: |
+          # Set parameters in nginx config file.
           php_version=$(php -v | head -n 1 | cut -d " " -f 2 | cut -f1-2 -d".")
           echo 'server {' > ~/webserver.config
+          echo '  client_max_body_size 100M;' >> ~/webserver.config
           echo '  listen 80 default_server;' >> ~/webserver.config
           echo '  listen [::]:80 default_server;' >> ~/webserver.config
           echo '  root '$HOME'/redcap/redcap;' >> ~/webserver.config
@@ -225,22 +247,34 @@ jobs:
 
       - name: Add mailer script and sentEmails PHP page
         run: |
+          # Add mailer script to write sent emails to a file, and sentEmails.php page for tests to access them.
+          pythonexec=$(which python3)
           echo '{"is_github":"1"}' > ~/sessionStorage
-          echo '' > ~/sentEmails
-          echo 'import json' > ~/mailer.py
+          touch ~/sentEmails
+          chmod a+rw ~/sentEmails
+          echo "#!$pythonexec" > ~/mailer.py
+          echo 'import json' >> ~/mailer.py
           echo 'import sys' >> ~/mailer.py
-          echo 'email = "," + json.dumps(sys.stdin.replace("\r\n","\n"))' >> ~/mailer.py
+          echo 'email = "," + json.dumps(sys.stdin.read().replace("\r\n","\n"))' >> ~/mailer.py
           echo 'with open("'$HOME'/sentEmails","a") as file:' >> ~/mailer.py
           echo '  file.write(email)' >> ~/mailer.py
           echo 'sys.exit(0)' >> ~/mailer.py
+          chmod a+rx ~/mailer.py
           echo '<?php' > ~/redcap/redcap/sentEmails.php
           echo 'header("Content-Type: application/json");' >> ~/redcap/redcap/sentEmails.php
           echo 'echo "[", substr(file_get_contents("'$HOME'/sentEmails"),1), "]";' >> ~/redcap/redcap/sentEmails.php
 
       - name: Configure PHP
         run: |
-          php_ini_path=$(php --ini | head -n 2 | tail -n 1 | sed "s/[^\/]*\//\//")
-          sudo sed -i "s/;\?sendmail_path =.*/sendmail_path = python3 \/home\/runner\/mailer.py/" $php_ini_path
+          # Set parameters in php.ini file.
+          php_version=$(php -v | head -n 1 | cut -d " " -f 2 | cut -f1-2 -d".")
+          php_ini_path_c=$(php --ini | head -n 2 | tail -n 1 | sed "s/[^\/]*\//\//")
+          php_ini_path_w="/etc/php/$php_version/fpm/php.ini"
+          sudo sed -i "s/;\?post_max_size =.*/post_max_size = 100M/" $php_ini_path_c
+          sudo sed -i "s/;\?upload_max_filesize =.*/upload_max_filesize = 100M/" $php_ini_path_c
+          sudo sed -i "s|;\?sendmail_path =.*|sendmail_path = $HOME/mailer.py|" $php_ini_path_c
+          sudo cp "$php_ini_path_c" "$php_ini_path_w"
+          sudo systemctl restart php${php_version}-fpm.service
 
       - name: Start web server
         run: |
@@ -265,20 +299,29 @@ jobs:
 
       - name: Install any composer dependencies
         run: |
+          # If composer.lock file present, run composer install.
           if [ -f "composer.lock" ]; then
             composer install
           fi
 
       - name: Set web browser driver for tests
         run: |
-          sed -i -e 's/self.driver = webdriver.\(Chrome\|Firefox\)()/self.driver = self.selectedBrowser/' ./tests/*.py
-          sed -i -e 's/print("ECHOSCREENSHOT")/print(self.driver.get_screenshot_as_base64())/' ./tests/*.py
-          sed -i -e 's/print("SETDESC:\(.*\)")/self.driver.setScreenshotDesc("\1")/' ./tests/*.py
-          sed -i -e 's/print("SAVEDESC:\(.*\)")/self.driver.saveDescription("\1")/' ./tests/*.py
+          # Override browser specific driver in test files.
+          driveroverride="sed -i -e 's/self.driver = webdriver.\(Chrome\|Firefox\)()/self.driver = self.selectedBrowser/' ./tests/*.py
+          sed -i -e 's/print(\"ECHOSCREENSHOT\")/print(self.driver.get_screenshot_as_base64())/' ./tests/*.py
+          sed -i -e 's/print(\"SETDESC:\(.*\)\")/self.driver.setScreenshotDesc(\"\1\")/' ./tests/*.py
+          sed -i -e 's/print(\"SAVEDESC:\(.*\)\")/self.driver.saveDescription(\"\1\")/' ./tests/*.py"
+          echo "driveroverride<<CMD" >> $GITHUB_ENV
+          echo "$driveroverride" >> $GITHUB_ENV
+          echo "CMD" >> $GITHUB_ENV
+          if ls ./tests/*.py &>/dev/null; then
+            eval "$driveroverride"
+          fi
 
 
       - name: Configure pytest
         run: |
+          # Write the conftest.py file.
           # Import the required python modules.
           echo 'import base64' > ./tests/conftest.py
           echo 'from PIL import Image' >> ./tests/conftest.py
@@ -358,7 +401,7 @@ jobs:
           echo '    stepsData.append({"desc":desc,"img":image})' >> ./tests/conftest.py
           echo '    if capman != None:' >> ./tests/conftest.py
           echo '      capman.suspend_global_capture()' >> ./tests/conftest.py
-          echo '      print("  > " + desc, flush=True)' >> ./tests/conftest.py
+          echo '      print("  > " + desc.replace("\n","\n    "), flush=True)' >> ./tests/conftest.py
           echo '      capman.resume_global_capture()' >> ./tests/conftest.py
           echo '  def moveElementIntoView(self):' >> ./tests/conftest.py
           echo '    self.parent.execute_script("let stX=window.scrollX;let stY=window.scrollY;let elem=arguments[0];if(elem.tagName.toLowerCase()=='\''option'\'')elem=elem.parentElement; if(elem.tagName.toLowerCase()=='\''optgroup'\'')elem=elem.parentElement;elem.scrollIntoView({block:\"nearest\",inline:\"nearest\"});if (window.scrollX>stX) window.scrollBy(25,0);else if (window.scrollX<stX) window.scrollBy(-25,0);if (window.scrollY>stY) window.scrollBy(0,25);else if (window.scrollY<stY) window.scrollBy(0,-25);elem.focus()",self.webElement)' >> ./tests/conftest.py
@@ -438,7 +481,7 @@ jobs:
           echo '    stepsData.append({"desc":desc,"img":""})' >> ./tests/conftest.py
           echo '    if capman != None:' >> ./tests/conftest.py
           echo '      capman.suspend_global_capture()' >> ./tests/conftest.py
-          echo '      print("  > " + desc, flush=True)' >> ./tests/conftest.py
+          echo '      print("  > " + desc.replace("\n","\n    "), flush=True)' >> ./tests/conftest.py
           echo '      capman.resume_global_capture()' >> ./tests/conftest.py
           echo '  def quit(self):' >> ./tests/conftest.py
           echo '    sessionStorage = self.execute_script("return (function(){var list={};for(var i=0;i<sessionStorage.length;i++){list[sessionStorage.key(i)]=sessionStorage.getItem(sessionStorage.key(i))};return JSON.stringify(list)})()")' >> ./tests/conftest.py
@@ -463,6 +506,9 @@ jobs:
           echo '      listWebElements = super().find_elements(targetType,targetRef)' >> ./tests/conftest.py
           echo '    return listWebElements' >> ./tests/conftest.py
           echo '  def execute_script(self, script: str, *args):' >> ./tests/conftest.py
+          echo '    if script[:10] == "//SETDESC:" or script[:11] == "//SAVEDESC:":' >> ./tests/conftest.py
+          echo '      for i in range(len(args)):' >> ./tests/conftest.py
+          echo '        script = script.replace("arguments[" + str(i) + "]", str(args[i]))' >> ./tests/conftest.py
           echo '    if script[:10] == "//SETDESC:":' >> ./tests/conftest.py
           echo '      self.setScreenshotDesc(script[10:])' >> ./tests/conftest.py
           echo '      return' >> ./tests/conftest.py
@@ -480,6 +526,8 @@ jobs:
           echo '  stepDesc = None' >> ./tests/conftest.py
           echo '  failScreenshot = None' >> ./tests/conftest.py
           echo '  capman = None' >> ./tests/conftest.py
+          echo '  with open("'$HOME'/sentEmails", "w") as file:' >> ./tests/conftest.py
+          echo '    pass' >> ./tests/conftest.py
           if [ "${{ matrix.browser }}" == "chrome" ]; then
             echo '  opts = webdriver.ChromeOptions()' >> ./tests/conftest.py
             echo '  opts.add_argument("--headless=new")' >> ./tests/conftest.py
@@ -543,6 +591,11 @@ jobs:
           echo '      with open("'$HOME'/screenshot.png", "rb") as file:' >> ./tests/conftest.py
           echo '        pngdata = file.read()' >> ./tests/conftest.py
           echo '      failScreenshot = base64.b64encode(pngdata).decode("ascii")' >> ./tests/conftest.py
+          echo '      with open("'$HOME'/sentEmails", "r") as file:' >> ./tests/conftest.py
+          echo '        maildata = file.read()' >> ./tests/conftest.py
+          echo '      if len(maildata) > 2:' >> ./tests/conftest.py
+          echo '        with open("'$HOME'/fails/" + node.name + ".emails.json","x") as file:' >> ./tests/conftest.py
+          echo '          file.write("[" + maildata[1:] + "]")' >> ./tests/conftest.py
           echo '    except:' >> ./tests/conftest.py
           echo '      pass' >> ./tests/conftest.py
           echo '    with open("'$HOME'/fails/" + node.name + ".txt","x") as file:' >> ./tests/conftest.py
@@ -553,7 +606,12 @@ jobs:
       - name: Perform initial actions
         id: initial_actions
         run: |
+          # Load contents of the init.json file if available and run the actions.
+          current_date=$(date -u +%F-%H-%M)
+          echo "current_date=$current_date" >> $GITHUB_ENV
+          echo "current_date=$current_date" >> $GITHUB_OUTPUT
           unit_name=""
+          allow_external_save="1"
           external_save_url=""
           external_save_data=""
           # Look for the init.json file.
@@ -594,18 +652,24 @@ jobs:
               # - If source = "github", the module needs to be downloaded from a public repository
               #   elsewhere on GitHub. Download the module from the specified repo using the release
               #   version if specified (otherwise uses latest release).
+              # - If source = "github2this", does the same as "github" but then replaces the
+              #   checked out repository contents with the specified module. Tests will then be run
+              #   as though they are being run on that module's repository (but custom output html
+              #   files will be retained).
               if [ "$initactions_action" == "module" ]; then
                 initactions_source=$(jq -r '.[0].source' ./tests/init.json)
                 initactions_name=$(jq -r '.[0].name // ""' ./tests/init.json)
                 if [ "$initactions_source" == "this" ] && [ "$initactions_name" != "" ]; then
                   unit_name="$initactions_name"
                   echo "Installing external module (this repository)"
-                  cp -r ./. ~/redcap/redcap/modules/${initactions_name}_v${unit_version}/
-                  modid=$(mysql -e 'SELECT ifnull(max(external_module_id),0)+1 FROM redcap_external_modules;' -B --disable_column_names -uroot redcap)
-                  mysql -e 'INSERT INTO redcap_external_modules (external_module_id,directory_prefix) VALUES ('$modid','\'${initactions_name}\'');' -uroot redcap
-                  mysql -e 'INSERT INTO redcap_external_module_settings (external_module_id,`key`,`type`,`value`) VALUES ('$modid','\''version'\'','\''string'\'','\''v'${unit_version}\'');' -uroot redcap
+                  if [ ! -d "$HOME/redcap/redcap/modules/${initactions_name}_v${unit_version}" ]; then
+                    cp -r ./. ~/redcap/redcap/modules/${initactions_name}_v${unit_version}/
+                    modid=$(mysql -e 'SELECT ifnull(max(external_module_id),0)+1 FROM redcap_external_modules;' -B --disable_column_names -uroot redcap)
+                    mysql -e 'INSERT INTO redcap_external_modules (external_module_id,directory_prefix) VALUES ('$modid','\'${initactions_name}\'');' -uroot redcap
+                    mysql -e 'INSERT INTO redcap_external_module_settings (external_module_id,`key`,`type`,`value`) VALUES ('$modid','\''version'\'','\''string'\'','\''v'${unit_version}\'');' -uroot redcap
+                  fi
                 fi
-                if [ "$initactions_source" == "github" ] && [ "$initactions_name" != "" ]; then
+                if ( [ "$initactions_source" == "github" ] || [ "$initactions_source" == "github2this" ] ) && [ "$initactions_name" != "" ]; then
                   echo "Installing external module (GitHub): $(jq -r '.[0].repo' ./tests/init.json)"
                   mver=$(jq -r '.[0].version // ""' ./tests/init.json)
                   if [ "$mver" == "" ]; then
@@ -633,6 +697,18 @@ jobs:
                   mkdir ~/redcap/redcap/modules/${initactions_name}_v$mver
                   tar --directory=$HOME/redcap/redcap/modules/${initactions_name}_v$mver -xzf ~/module.tar.gz
                   rm ~/module.tar.gz
+                  if [ ! -f "$HOME/redcap/redcap/modules/${initactions_name}_v$mver/config.json" ]; then
+                    msubdir=$(ls "$HOME/redcap/redcap/modules/${initactions_name}_v$mver")
+                    if [ -d "$HOME/redcap/redcap/modules/${initactions_name}_v$mver/$msubdir" ] && \
+                       [ -f "$HOME/redcap/redcap/modules/${initactions_name}_v$mver/$msubdir/config.json" ]; then
+                      prevDir=$(pwd)
+                      cd "$HOME/redcap/redcap/modules/${initactions_name}_v$mver/$msubdir"
+                      mv * ..
+                      cd ..
+                      rm -r "$msubdir"
+                      cd "$prevDir"
+                    fi
+                  fi
                   if [ -f "$HOME/redcap/redcap/modules/${initactions_name}_v$mver/composer.lock" ]; then
                     prevDir=$(pwd)
                     cd "$HOME/redcap/redcap/modules/${initactions_name}_v$mver"
@@ -642,13 +718,43 @@ jobs:
                   modid=$(mysql -e 'SELECT ifnull(max(external_module_id),0)+1 FROM redcap_external_modules;' -B --disable_column_names -uroot redcap)
                   mysql -e 'INSERT INTO redcap_external_modules (external_module_id,directory_prefix) VALUES ('$modid','\'${initactions_name}\'');' -uroot redcap
                   mysql -e 'INSERT INTO redcap_external_module_settings (external_module_id,`key`,`type`,`value`) VALUES ('$modid','\''version'\'','\''string'\'','\''v'$mver\'');' -uroot redcap
+                  if [ "$initactions_source" == "github2this" ]; then
+                    echo "Replacing this repository with module."
+                    allow_external_save="0"
+                    unit_name="$initactions_name"
+                    unit_version="$mver"
+                    mv ./tests/conftest.py ~/conftest.py
+                    rm -rf ./*
+                    cp -r "$HOME/redcap/redcap/modules/${initactions_name}_v$mver/." ./
+                    if ls ./tests/*.py &>/dev/null; then
+                      eval "$driveroverride"
+                    fi
+                    mv ~/conftest.py ./tests/conftest.py
+                    if [ "${{ matrix.browser }}" == "chrome" ] && [ "${{ matrix.redcap_version }}" == "inst" ] && [ -f "./tests/details.json" ]; then
+                      cp ./tests/details.json ~/details.json
+                    fi
+                    initactions_current=0
+                    if [ -f "./tests/init.json" ]; then
+                      initactions_total=$(jq '. | length' ./tests/init.json)
+                      echo " "
+                      echo "Found new init.json, $initactions_total initial actions:"
+                      jq '[0]+.' ./tests/init.json > ./tests/init.json.tmp && mv ./tests/init.json.tmp ./tests/init.json
+                    else
+                      initactions_total=0
+                      echo '[0]' > ./tests/init.json
+                    fi
+                  fi
                 fi
               fi
               # If an external save action, get the URL and data structure.
               if [ "$initactions_action" == "external-save" ]; then
-                echo "Setting external save URL/structure..."
-                external_save_url=$(jq -r '.[0].url // ""' ./tests/init.json)
-                external_save_data=$(jq -c '.[0].data // ""' ./tests/init.json)
+                if [ "$allow_external_save" == "1" ]; then
+                  echo "Setting external save URL/structure..."
+                  external_save_url=$(jq -r '.[0].url // ""' ./tests/init.json)
+                  external_save_data=$(jq -c '.[0].data // ""' ./tests/init.json)
+                else
+                  echo "Skip external save action."
+                fi
               fi
               jq '.[1:]' ./tests/init.json > ./tests/init.json.tmp && mv ./tests/init.json.tmp ./tests/init.json
             done
@@ -660,9 +766,6 @@ jobs:
           fi
           echo "unit_name=$unit_name" >> $GITHUB_ENV
           echo "unit_name=$unit_name" >> $GITHUB_OUTPUT
-          current_date=$(date -u +%F-%H-%M)
-          echo "current_date=$current_date" >> $GITHUB_ENV
-          echo "current_date=$current_date" >> $GITHUB_OUTPUT
           echo "external_save_url=$external_save_url" >> $GITHUB_OUTPUT
           echo "external_save_data=$external_save_data" >> $GITHUB_OUTPUT
 
@@ -687,7 +790,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ztemp_${{ matrix.redcap_version }}_${{ matrix.browser }}
-          path: ~/report.json
+          path: |
+            ~/report.json
+            ~/details.json
           retention-days: 1
 
       - name: Get artifact ID
@@ -753,10 +858,16 @@ jobs:
           jq '.[]' ~/selenium_outputs/ztemp_inst_chrome/report.json > ~/tests_inst_chrome.json
           jq '.[]' ~/selenium_outputs/ztemp_inst_firefox/report.json > ~/tests_inst_firefox.json
           jq -s '.' ~/tests_inst_chrome.json ~/tests_inst_firefox.json | jq 'sort_by(.file,.outcome)|unique_by(.file)|.[]|{name:.file,expected:"",scenario:""}+.' > ~/tests_inst.json
-          if [ "$new_version" != "null" ] ; then
+          if [ "$new_version" != "null" ] && [ -f "$HOME/selenium_outputs/ztemp_new_chrome/report.json" ] && [ -f "$HOME/selenium_outputs/ztemp_new_firefox/report.json" ]; then
             jq '.[]' ~/selenium_outputs/ztemp_new_chrome/report.json > ~/tests_new_chrome.json
             jq '.[]' ~/selenium_outputs/ztemp_new_firefox/report.json > ~/tests_new_firefox.json
             jq -s '.' ~/tests_new_chrome.json ~/tests_new_firefox.json | jq 'sort_by(.file,.outcome)|unique_by(.file)|.[]|{name:.file,expected:"",scenario:""}+.' > ~/tests_new.json
+          else
+            new_version="null"
+            echo "new_version=$new_version" >> $GITHUB_ENV
+          fi
+          if [ -f "$HOME/selenium_outputs/ztemp_inst_chrome/details.json" ]; then
+            cp ~/selenium_outputs/ztemp_inst_chrome/details.json ./tests/details.json
           fi
 
       - name: Get test details

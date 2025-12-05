@@ -10,6 +10,20 @@ on:
         type: boolean
         default: false
         required: false
+      USERS_NAMES:
+        type: string
+        required: false
+      EXTERNAL_RELEASE_DB_URL:
+        type: string
+        required: false
+      EXTERNAL_RELEASE_DB_DATA:
+        type: string
+        required: false
+    secrets:
+      SECRET1:
+        required: false
+      SECRET2:
+        required: false
 
 
 jobs:
@@ -73,7 +87,7 @@ jobs:
             composer install
           fi
 
-      - name: Create release zip files
+      - name: Create release zip file
         run: |
           rm -r ./.[^.]*
           if [ -d "./tests" ]; then
@@ -81,14 +95,10 @@ jobs:
           fi
           mkdir ~/files
           mkdir ~/files/main
-          mkdir ~/files/repo
           mkdir ~/files/main/${module_dirname}_v${module_version}
           cp -r ./. ~/files/main/${module_dirname}_v${module_version}/
-          cp -r ./. ~/files/repo/
           cd ~/files/main
           zip -r ../${module_dirname}_v${module_version}.zip *
-          cd ~/files/repo
-          zip -r ../${module_dirname}_v${module_version}_repo_pkg.zip *
           cd ~/files
           filesdir=$(pwd)
           echo "filesdir=$filesdir" >> $GITHUB_ENV
@@ -107,7 +117,7 @@ jobs:
           upload_url=$(jq -r '.upload_url' ~/releaseresponse.json)
           echo "upload_url=$upload_url" >> $GITHUB_ENV
 
-      - name: Upload regular zip
+      - name: Upload zip
         run: |
           upload_url1=$(echo "$upload_url" | sed 's/{?name,label}/?name=${{ env.module_dirname }}_v${{ env.module_version }}.zip\&label=Download%20module/')
           curl -L -X POST \
@@ -118,14 +128,36 @@ jobs:
             $upload_url1 \
             --data-binary "@$filesdir/${module_dirname}_v${module_version}.zip"
 
-      - name: Upload repo zip
-        if: ${{ ! inputs.NO_REPO_PKG }}
+      - name: Submit release details to an external release database
+        if: inputs.EXTERNAL_RELEASE_DB_URL != '' && inputs.EXTERNAL_RELEASE_DB_DATA != ''
+        env:
+          releasebody: ${{ github.event.pull_request.body }}
+          pr_assignee: ${{ github.event.pull_request.assignee.login }}
+          pr_number: ${{ github.event.pull_request.number }}
+          users_names: ${{ inputs.USERS_NAMES }}
+          external_release_db_url: ${{ inputs.EXTERNAL_RELEASE_DB_URL }}
+          external_release_db_data: ${{ inputs.EXTERNAL_RELEASE_DB_DATA }}
+          secret1: ${{ secrets.SECRET1 }}
+          secret2: ${{ secrets.SECRET2 }}
         run: |
-          upload_url2=$(echo "$upload_url" | sed 's/{?name,label}/?name=${{ env.module_dirname }}_v${{ env.module_version }}_repo_pkg.zip\&label=REDCap%20module%20repository%20package/')
-          curl -L -X POST \
+          releasebody=$(jq -n --arg releasebody "$releasebody" '$releasebody')
+          users_names='{'"$users_names"'}'
+          approvals=$(curl -L \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             -H "X-Github-Api-Version: 2022-11-28" \
-            -H "Content-Type: application/zip" \
-            $upload_url2 \
-            --data-binary "@$filesdir/${module_dirname}_v${module_version}_repo_pkg.zip"
+            https://api.github.com/repos/${{ github.repository }}/pulls/$pr_number/reviews )
+          if [ ${approvals:0:1} != "[" ]; then
+            approvals="[]"
+          fi
+          approvals=$(echo "$approvals" | jq --argjson names "$users_names" \
+            '.[] | select(.state == "APPROVED") | { name: ($names[.user.login] // .user.login), date: .submitted_at }' | jq -s -c '.')
+          user_name=$((echo "$users_names" | jq -r '."'"$pr_assignee"'" // "'"$pr_assignee"'"' 2>/dev/null) || echo "$pr_assignee")
+          user_name=$(echo "$user_name" | jq -R '.')
+          module_version=$(echo "$module_version" | jq -R '.')
+          external_release_db_url=$(echo "$external_release_db_url" | jq -r -R '.|split("[secret-1]")|join("'"$secret1"'")|split("[secret-2]")|join("'"$secret2"'")')
+          echo "$external_release_db_data" | jq -r -R --arg version "$module_version" --arg approvals "$approvals" --arg username "$user_name" --arg releasebody "$releasebody" '.|split("[secret-1]")|join("'"$secret1"'")|split("[secret-2]")|join("'"$secret2"'")|split("[release-body]")|join($releasebody)|split("[unit-version]")|join($version)|split("[user-name]")|join($username)|split("[unit-approvals]")|join($approvals)' > ~/external_release_db_data
+          curl -L -X POST \
+            -H "Content-Type: application/json" \
+            $external_release_db_url \
+            --data-binary "@$HOME/external_release_db_data"
