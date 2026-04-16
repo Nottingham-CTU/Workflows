@@ -151,6 +151,39 @@ jobs:
           echo '$db_ssl_key = ""; $db_ssl_cert = ""; $db_ssl_ca = ""; $db_ssl_capath = null; $db_ssl_cipher = null; $db_ssl_verify_server_cert = false;' >> ~/redcap/redcap/database.php
           echo '$salt = "abc123";' >> ~/redcap/redcap/database.php
 
+      - name: Upgrade PHP
+        run: |
+          # Uninstall the provided PHP version and replace it with the latest release of the second newest minor version.
+          installed_php_ver=$(php -v | head -n 1 | cut -d " " -f 2 | cut -f1-2 -d".")
+          sudo apt-get purge "php${installed_php_ver}-amqp" "php${installed_php_ver}-apcu" "php${installed_php_ver}-dba" > /dev/null || true
+          sudo apt-get purge "php${installed_php_ver}-dev" "php${installed_php_ver}-enchant" "php${installed_php_ver}-imap" > /dev/null || true
+          sudo apt-get purge "php${installed_php_ver}-igbinary" "php${installed_php_ver}-interbase" "php${installed_php_ver}-mongodb" > /dev/null || true
+          sudo apt-get purge "php${installed_php_ver}-odbc" "php${installed_php_ver}-pcov" "php${installed_php_ver}-pgsql" > /dev/null || true
+          sudo apt-get purge "php${installed_php_ver}-phpdbg" "php${installed_php_ver}-pspell" "php${installed_php_ver}-readline" > /dev/null || true
+          sudo apt-get purge "php${installed_php_ver}-redis" "php${installed_php_ver}-snmp" "php${installed_php_ver}-sqlite3" > /dev/null || true
+          sudo apt-get purge "php${installed_php_ver}-sybase" "php${installed_php_ver}-tidy" "php${installed_php_ver}-xdebug" > /dev/null || true
+          sudo apt-get purge "php${installed_php_ver}-xsl" "php${installed_php_ver}-yaml" "php${installed_php_ver}-zmq" > /dev/null || true
+          installed_php=($(dpkg -l | awk '/^ii/ && $2 ~ /^php[0-9]/ {print $2}'))
+          declare -a installed_php_pkgs=()
+          for pkg in "${installed_php[@]}"; do
+            if [[ "$pkg" =~ ^php${installed_php_ver}- ]]; then
+              installed_php_pkgs+=("${pkg#php${installed_php_ver}-}")
+            fi
+          done
+          echo "Uninstalling PHP ${installed_php_ver}"
+          sudo apt-get purge "php${installed_php_ver}" "php${installed_php_ver}-*" > /dev/null || true
+          sudo add-apt-repository ppa:ondrej/php > /dev/null
+          sudo apt-get update > /dev/null
+          php_versions=($(apt-cache search ^php[0-9]\\.[0-9]$ | awk '{print $1}' | sed 's/php//' | sort -t. -k1,1n -k2,2n))
+          echo "Installing PHP ${php_versions[-2]}"
+          package="php${php_versions[-2]}"
+          sudo NEEDRESTART_SUSPEND=1 apt-get install "$package" > /dev/null
+          for pkg in "${installed_php_pkgs[@]}"; do
+            echo " - extension ${pkg}"
+            sudo NEEDRESTART_SUSPEND=1 apt-get install "${package}-${pkg}" > /dev/null
+          done
+
+
       - name: Start MySQL and create REDCap database
         run: |
           # Start MySQL and create REDCap database.
@@ -304,6 +337,18 @@ jobs:
             composer install
           fi
 
+      - name: Install any node dependencies and run build
+        run: |
+          # If package-lock.json file present, run npm ci and npm run build.
+          if [ -f "package-lock.json" ]; then
+            npm ci
+            npm run build
+            # After build, node_modules directory should not be required so is removed.
+            if [ -d "./node_modules" ]; then
+              rm -r ./node_modules
+            fi
+          fi
+
       - name: Set web browser driver for tests
         run: |
           # Override browser specific driver in test files.
@@ -337,8 +382,9 @@ jobs:
           # Extend the WebElement class:
           #
           echo 'class ExtendedWebElement():' >> ./tests/conftest.py
-          echo '  def __init__(self,obj):' >> ./tests/conftest.py
+          echo '  def __init__(self,obj,ref):' >> ./tests/conftest.py
           echo '    self.webElement = obj' >> ./tests/conftest.py
+          echo '    self.elementRef = ref' >> ./tests/conftest.py
           echo '  def __getattr__(self,name):' >> ./tests/conftest.py
           echo '    return getattr(self.webElement,name)' >> ./tests/conftest.py
           echo '  def getElementScreenshot(self,desc):' >> ./tests/conftest.py
@@ -453,8 +499,15 @@ jobs:
           echo '          return self.webElement' >> ./tests/conftest.py
           echo '        self.moveElementIntoView()' >> ./tests/conftest.py
           echo '        time.sleep(1)' >> ./tests/conftest.py
+          echo '      except (StaleElementReferenceException):' >> ./tests/conftest.py
+          echo '        if i == 11:' >> ./tests/conftest.py
+          echo '          raise' >> ./tests/conftest.py
+          echo '        try:' >> ./tests/conftest.py
+          echo '          self.webElement = self.parent.find_element(*self.elementRef).webElement' >> ./tests/conftest.py
+          echo '        except:' >> ./tests/conftest.py
+          echo '          time.sleep(1)' >> ./tests/conftest.py
           echo '  def find_element(self, by, value):' >> ./tests/conftest.py
-          echo '    return ExtendedWebElement(self.webElement.find_element(by, value))' >> ./tests/conftest.py
+          echo '    return ExtendedWebElement(self.webElement.find_element(by, value),(by, value))' >> ./tests/conftest.py
           echo '  def send_keys(self, *keys_to_send):' >> ./tests/conftest.py
           echo '    self.moveElementIntoView()' >> ./tests/conftest.py
           echo '    if keys_to_send[0] == "ECHOSCREENSHOT":' >> ./tests/conftest.py
@@ -515,7 +568,7 @@ jobs:
           echo '        if i == 11:' >> ./tests/conftest.py
           echo '          raise' >> ./tests/conftest.py
           echo '        time.sleep(1)' >> ./tests/conftest.py
-          echo '    return ExtendedWebElement(webElement)' >> ./tests/conftest.py
+          echo '    return ExtendedWebElement(webElement, (targetType, targetRef))' >> ./tests/conftest.py
           echo '  def find_elements(self,targetType,targetRef):' >> ./tests/conftest.py
           echo '    listWebElements = super().find_elements(targetType,targetRef)' >> ./tests/conftest.py
           echo '    for i in range(6):' >> ./tests/conftest.py

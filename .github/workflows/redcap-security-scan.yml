@@ -84,22 +84,50 @@ jobs:
 
       - name: Upgrade PHP
         run: |
-          package="php$(php -v | head -n 1 | cut -d " " -f 2 | cut -f1-2 -d".")"
-          sudo add-apt-repository ppa:ondrej/php
-          sudo apt-get update && sudo apt-get install --only-upgrade "$package"
+          # Uninstall the provided PHP version and replace it with the latest release of the second newest minor version.
+          installed_php_ver=$(php -v | head -n 1 | cut -d " " -f 2 | cut -f1-2 -d".")
+          sudo apt-get purge "php${installed_php_ver}-amqp" "php${installed_php_ver}-apcu" "php${installed_php_ver}-dba" > /dev/null || true
+          sudo apt-get purge "php${installed_php_ver}-dev" "php${installed_php_ver}-enchant" "php${installed_php_ver}-imap" > /dev/null || true
+          sudo apt-get purge "php${installed_php_ver}-igbinary" "php${installed_php_ver}-interbase" "php${installed_php_ver}-mongodb" > /dev/null || true
+          sudo apt-get purge "php${installed_php_ver}-odbc" "php${installed_php_ver}-pcov" "php${installed_php_ver}-pgsql" > /dev/null || true
+          sudo apt-get purge "php${installed_php_ver}-phpdbg" "php${installed_php_ver}-pspell" "php${installed_php_ver}-readline" > /dev/null || true
+          sudo apt-get purge "php${installed_php_ver}-redis" "php${installed_php_ver}-snmp" "php${installed_php_ver}-sqlite3" > /dev/null || true
+          sudo apt-get purge "php${installed_php_ver}-sybase" "php${installed_php_ver}-tidy" "php${installed_php_ver}-xdebug" > /dev/null || true
+          sudo apt-get purge "php${installed_php_ver}-xsl" "php${installed_php_ver}-yaml" "php${installed_php_ver}-zmq" > /dev/null || true
+          installed_php=($(dpkg -l | awk '/^ii/ && $2 ~ /^php[0-9]/ {print $2}'))
+          declare -a installed_php_pkgs=()
+          for pkg in "${installed_php[@]}"; do
+            if [[ "$pkg" =~ ^php${installed_php_ver}- ]]; then
+              installed_php_pkgs+=("${pkg#php${installed_php_ver}-}")
+            fi
+          done
+          echo "Uninstalling PHP ${installed_php_ver}"
+          sudo apt-get purge "php${installed_php_ver}" "php${installed_php_ver}-*" > /dev/null || true
+          sudo add-apt-repository ppa:ondrej/php > /dev/null
+          sudo apt-get update > /dev/null
+          php_versions=($(apt-cache search ^php[0-9]\\.[0-9]$ | awk '{print $1}' | sed 's/php//' | sort -t. -k1,1n -k2,2n))
+          echo "Installing PHP ${php_versions[-2]}"
+          package="php${php_versions[-2]}"
+          sudo NEEDRESTART_SUSPEND=1 apt-get install "$package" > /dev/null
+          for pkg in "${installed_php_pkgs[@]}"; do
+            echo " - extension ${pkg}"
+            sudo NEEDRESTART_SUSPEND=1 apt-get install "${package}-${pkg}" > /dev/null
+          done
 
-      - name: Start MySQL
-        run: sudo /etc/init.d/mysql start
-
-      - name: Create REDCap MySQL database
-        run: mysql -e 'CREATE DATABASE redcap;' -uroot -proot
+      - name: Start MySQL and create REDCap database
+        run: |
+          # Start MySQL and create REDCap database.
+          export MYSQL_PWD="root"
+          echo "MYSQL_PWD=$MYSQL_PWD" >> $GITHUB_ENV
+          sudo /etc/init.d/mysql start
+          mysql -e 'CREATE DATABASE redcap;' -uroot
 
       - name: Run installation SQL files
         run: |
-          mysql -uroot -proot redcap < ~/redcap/redcap/redcap_v${{ env.redcap_version }}/Resources/sql/install.sql
-          mysql -uroot -proot redcap < ~/redcap/redcap/redcap_v${{ env.redcap_version }}/Resources/sql/install_data.sql
-          mysql -e 'UPDATE redcap_config SET value = '\''${{ env.redcap_version }}'\'' WHERE field_name = '\''redcap_version'\'';' -uroot -proot redcap
-          mysql -e 'REPLACE INTO redcap_history_version (`date`, redcap_version) VALUES (curdate(),'\''${{ env.redcap_version }}'\'');' -uroot -proot redcap
+          mysql -uroot redcap < ~/redcap/redcap/redcap_v${{ env.redcap_version }}/Resources/sql/install.sql
+          mysql -uroot redcap < ~/redcap/redcap/redcap_v${{ env.redcap_version }}/Resources/sql/install_data.sql
+          mysql -e 'UPDATE redcap_config SET value = '\''${{ env.redcap_version }}'\'' WHERE field_name = '\''redcap_version'\'';' -uroot redcap
+          mysql -e 'REPLACE INTO redcap_history_version (`date`, redcap_version) VALUES (curdate(),'\''${{ env.redcap_version }}'\'');' -uroot redcap
 
       - name: Install scan script
         run: |
