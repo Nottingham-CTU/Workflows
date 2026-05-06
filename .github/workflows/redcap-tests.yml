@@ -376,12 +376,14 @@ jobs:
           echo 'from selenium.common.exceptions import ElementClickInterceptedException' >> ./tests/conftest.py
           echo 'from selenium.common.exceptions import ElementNotInteractableException' >> ./tests/conftest.py
           echo 'from selenium.common.exceptions import NoSuchElementException' >> ./tests/conftest.py
+          echo 'from selenium.common.exceptions import StaleElementReferenceException' >> ./tests/conftest.py
+          echo 'from selenium.webdriver.remote.webelement import WebElement' >> ./tests/conftest.py
           echo 'import time' >> ./tests/conftest.py
           #
           #
           # Extend the WebElement class:
           #
-          echo 'class ExtendedWebElement():' >> ./tests/conftest.py
+          echo 'class ExtendedWebElement(WebElement):' >> ./tests/conftest.py
           echo '  def __init__(self,obj,ref):' >> ./tests/conftest.py
           echo '    self.webElement = obj' >> ./tests/conftest.py
           echo '    self.elementRef = ref' >> ./tests/conftest.py
@@ -846,6 +848,8 @@ jobs:
       - name: Run Tests
         id: run_tests
         run: |
+          # Run all tests.
+          PYTHONBREAKPOINT=0
           echo comp_${{ matrix.redcap_version }}_${{ matrix.browser }}=1 >> $GITHUB_OUTPUT
           python3 -m pytest -rfEP --timeout=600 --timeout_method=thread --json-report --json-report-file=$HOME/report.json ./tests/
 
