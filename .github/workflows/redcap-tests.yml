@@ -121,11 +121,8 @@ jobs:
           rcc_user: ${{ inputs.RC_COMMUNITY_USERNAME }}
           rcc_pass: ${{ secrets.RC_COMMUNITY_PASSWORD }}
         run: |
+          # Download REDCap.
           wget -q --post-data="version=${redcap_version}&install=1&username=${rcc_user}&password=${rcc_pass}" -O ~/redcap.zip https://redcap.vumc.org/plugins/redcap_consortium/versions.php
-
-      - name: Check REDCap download size
-        if: steps.cache-redcap.outputs.cache-hit != 'true'
-        run: |
           # If download size less than 10MB, assume an error has occurred and exit.
           if [ $(stat -c%s ~/redcap.zip) -lt 10000000 ]; then
             exit 1
@@ -154,12 +151,13 @@ jobs:
       - name: Upgrade PHP
         run: |
           # Uninstall the provided PHP version and replace it with the latest release of the second newest minor version.
-          installed_php_ver=$(php -v | head -n 1 | cut -d " " -f 2 | cut -f1-2 -d".")
+          installed_php_ver_full=$(php -v | head -n 1 | cut -d " " -f 2)
+          installed_php_ver=$(echo "$installed_php_ver_full" | cut -f1-2 -d".")
           sudo apt-get purge "php${installed_php_ver}-amqp" "php${installed_php_ver}-apcu" "php${installed_php_ver}-dba" > /dev/null || true
           sudo apt-get purge "php${installed_php_ver}-dev" "php${installed_php_ver}-enchant" "php${installed_php_ver}-imap" > /dev/null || true
           sudo apt-get purge "php${installed_php_ver}-igbinary" "php${installed_php_ver}-interbase" "php${installed_php_ver}-mongodb" > /dev/null || true
           sudo apt-get purge "php${installed_php_ver}-odbc" "php${installed_php_ver}-pcov" "php${installed_php_ver}-pgsql" > /dev/null || true
-          sudo apt-get purge "php${installed_php_ver}-phpdbg" "php${installed_php_ver}-pspell" "php${installed_php_ver}-readline" > /dev/null || true
+          sudo apt-get purge "php${installed_php_ver}-phpdbg" "php${installed_php_ver}-pspell" > /dev/null || true
           sudo apt-get purge "php${installed_php_ver}-redis" "php${installed_php_ver}-snmp" "php${installed_php_ver}-sqlite3" > /dev/null || true
           sudo apt-get purge "php${installed_php_ver}-sybase" "php${installed_php_ver}-tidy" "php${installed_php_ver}-xdebug" > /dev/null || true
           sudo apt-get purge "php${installed_php_ver}-xsl" "php${installed_php_ver}-yaml" "php${installed_php_ver}-zmq" > /dev/null || true
@@ -170,17 +168,17 @@ jobs:
               installed_php_pkgs+=("${pkg#php${installed_php_ver}-}")
             fi
           done
-          echo "Uninstalling PHP ${installed_php_ver}"
+          echo "Uninstalling PHP ${installed_php_ver_full}"
           sudo apt-get purge "php${installed_php_ver}" "php${installed_php_ver}-*" > /dev/null || true
           sudo add-apt-repository ppa:ondrej/php > /dev/null
           sudo apt-get update > /dev/null
           php_versions=($(apt-cache search ^php[0-9]\\.[0-9]$ | awk '{print $1}' | sed 's/php//' | sort -t. -k1,1n -k2,2n))
           echo "Installing PHP ${php_versions[-2]}"
           package="php${php_versions[-2]}"
-          sudo NEEDRESTART_SUSPEND=1 apt-get install "$package" > /dev/null
+          sudo NEEDRESTART_SUSPEND=1 apt-get install "$package" > /dev/null || sudo NEEDRESTART_SUSPEND=1 apt-get install "$package" > /dev/null
           for pkg in "${installed_php_pkgs[@]}"; do
             echo " - extension ${pkg}"
-            sudo NEEDRESTART_SUSPEND=1 apt-get install "${package}-${pkg}" > /dev/null
+            sudo NEEDRESTART_SUSPEND=1 apt-get install "${package}-${pkg}" > /dev/null || sudo NEEDRESTART_SUSPEND=1 apt-get install "${package}-${pkg}" > /dev/null
           done
 
 
