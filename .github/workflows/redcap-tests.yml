@@ -98,7 +98,7 @@ jobs:
 
       - name: Check for cached REDCap zip for version ${{ env.redcap_version }}
         id: check-cache-redcap
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ~/redcap.zip
           key: redcap-${{ env.redcap_version }}
@@ -110,7 +110,7 @@ jobs:
 
       - name: Restore REDCap zip for version ${{ env.redcap_version }}
         id: cache-redcap
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ~/redcap.zip
           key: redcap-${{ env.redcap_version }}
@@ -130,7 +130,7 @@ jobs:
 
       - name: Cache REDCap zip for version ${{ env.redcap_version }}
         if: steps.cache-redcap.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: ~/redcap.zip
           key: redcap-${{ env.redcap_version }}
@@ -170,24 +170,37 @@ jobs:
           done
           echo "Uninstalling PHP ${installed_php_ver_full}"
           sudo apt-get purge "php${installed_php_ver}" "php${installed_php_ver}-*" > /dev/null || true
-          sudo add-apt-repository ppa:ondrej/php > /dev/null
+          sudo add-apt-repository ppa:ondrej/php > /dev/null 2>&1 || sudo add-apt-repository ppa:ondrej/php > /dev/null
           sudo apt-get update > /dev/null
           php_versions=($(apt-cache search ^php[0-9]\\.[0-9]$ | awk '{print $1}' | sed 's/php//' | sort -t. -k1,1n -k2,2n))
           echo "Installing PHP ${php_versions[-2]}"
           package="php${php_versions[-2]}"
-          sudo NEEDRESTART_SUSPEND=1 apt-get install "$package" > /dev/null || sudo NEEDRESTART_SUSPEND=1 apt-get install "$package" > /dev/null
+          sudo NEEDRESTART_SUSPEND=1 apt-get install "$package" > /dev/null 2>&1 || sudo NEEDRESTART_SUSPEND=1 apt-get install "$package" > /dev/null
           for pkg in "${installed_php_pkgs[@]}"; do
             echo " - extension ${pkg}"
-            sudo NEEDRESTART_SUSPEND=1 apt-get install "${package}-${pkg}" > /dev/null || sudo NEEDRESTART_SUSPEND=1 apt-get install "${package}-${pkg}" > /dev/null
+            sudo NEEDRESTART_SUSPEND=1 apt-get install "${package}-${pkg}" > /dev/null 2>&1 || sudo NEEDRESTART_SUSPEND=1 apt-get install "${package}-${pkg}" > /dev/null
           done
 
 
-      - name: Start MySQL and create REDCap database
+      - name: Start MySQL/MariaDB
         run: |
-          # Start MySQL and create REDCap database.
+          # Start MySQL/MariaDB.
+          if [ "${{ matrix.browser }}" != "chrome" ]; then
+            sudo apt-get purge mysql-client mysql-server mysql-common > /dev/null 2>&1 || sudo apt-get purge mysql-client mysql-server mysql-common > /dev/null
+            sudo NEEDRESTART_SUSPEND=1 apt-get install mariadb-server mariadb-client > /dev/null || sudo NEEDRESTART_SUSPEND=1 apt-get install mariadb-server mariadb-client > /dev/null
+          fi
+          mysql --version
+          if [ "${{ matrix.browser }}" == "chrome" ]; then
+            sudo /etc/init.d/mysql start
+          else
+            sudo mysql -e 'ALTER USER '\''root'\''@'\''localhost'\'' IDENTIFIED BY '\''root'\'';FLUSH PRIVILEGES;'
+          fi
+
+      - name: Create REDCap database
+        run: |
+          # Create REDCap database.
           export MYSQL_PWD="root"
           echo "MYSQL_PWD=$MYSQL_PWD" >> $GITHUB_ENV
-          sudo /etc/init.d/mysql start
           mysql -e 'CREATE DATABASE redcap;' -uroot
 
       - name: Run installation SQL files
@@ -326,7 +339,7 @@ jobs:
           pip3 install selenium
 
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install any composer dependencies
         run: |
@@ -855,15 +868,19 @@ jobs:
         id: get_output
         if: (success() || failure())
         run: |
+          # Get the test output and any webserver error logs.
           if [ -f "$HOME/report.json" ]; then
             jq '.tests[]|{file:(.keywords[]|select(endswith(".py")))}+.+{error:.call.longrepr,error_line:.call.crash.lineno}|del(.["nodeid","setup","teardown","keywords","call","lineno"])' ~/report.json | jq -s '.' > ~/report.json.tmp && mv ~/report.json.tmp ~/report.json
           fi
           echo ${{ matrix.redcap_version }}_version=${{ env.redcap_version }} >> $GITHUB_OUTPUT
+          if [ -f "/var/log/nginx/error.log" ] && [ $(stat -c%s "/var/log/nginx/error.log") -gt 5 ]; then
+            cp /var/log/nginx/error.log ~/fails/webserver_error_log.txt
+          fi
 
       - name: Save output to artifact
         id: save_to_artifact
         if: (success() || failure())
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ztemp_${{ matrix.redcap_version }}_${{ matrix.browser }}
           path: |
@@ -881,13 +898,9 @@ jobs:
             echo tests_${{ matrix.redcap_version }}_${{ matrix.browser }}="$artifact_id" >> $GITHUB_OUTPUT
           fi
 
-      - name: Web server error output
-        if: failure()
-        run: cat /var/log/nginx/error.log
-
       - name: Store data from failures as artifact
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tests_${{ env.unit_name }}_v${{ env.unit_version }}_rc${{ env.redcap_version }}_fails_${{ matrix.browser }}_${{ env.current_date }}
           path: ~/fails/
@@ -902,10 +915,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Get test results from artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           pattern: ztemp_*
           path: ~/selenium_outputs/
@@ -1029,7 +1042,7 @@ jobs:
           fi
 
       - name: Store test output as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tests_${{ env.unit_name }}_v${{ env.unit_version }}_${{ env.current_date }}
           path: ~/output/

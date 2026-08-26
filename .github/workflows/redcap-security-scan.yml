@@ -42,7 +42,7 @@ jobs:
 
       - name: Restore REDCap zip for version ${{ env.redcap_version }}
         id: cache-redcap
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ~/redcap.zip
           key: redcap-${{ env.redcap_version }}
@@ -62,7 +62,7 @@ jobs:
 
       - name: Cache REDCap zip for version ${{ env.redcap_version }}
         if: steps.cache-redcap.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: ~/redcap.zip
           key: redcap-${{ env.redcap_version }}
@@ -166,7 +166,7 @@ jobs:
         run: sed -i -e 's/$warningDisplayed = true;//' ~/redcap/redcap/redcap_v${{ env.redcap_version }}/ExternalModules/classes/Scan.php
 
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install any composer dependencies
         run: |
@@ -182,12 +182,14 @@ jobs:
       - name: Get file name and date
         if: (success() || failure()) && env.psalm_started == '1'
         run: |
+          current_date=$(date -u +%F-%H-%M)
+          psalm_output=$(ls redcap-scan_*.html)
+          mv "$psalm_output" $(echo "$psalm_output" | sed 's/.html$/_'$current_date'.html/')
           psalm_output=$(ls redcap-scan_*.html)
           echo "psalm_output=$psalm_output" >> $GITHUB_ENV
           psalm_output_json=$(echo "$psalm_output" | sed 's/.html$/.json/')
           echo "psalm_output_json=$psalm_output_json" >> $GITHUB_ENV
           touch "$psalm_output_json"
-          current_date=$(date -u +%F-%H-%M)
           echo "current_date=$current_date" >> $GITHUB_ENV
 
       - name: Psalm scan json output
@@ -196,13 +198,23 @@ jobs:
           sed -i 's/--debug/--output-format=json/g' ~/redcap/redcap/redcap_v${{ env.redcap_version }}/ExternalModules/bin/scan.php
           sed -i 's/--debug/--output-format=json/g' ~/redcap/redcap/redcap_v${{ env.redcap_version }}/ExternalModules/classes/Scan.php
           ( ~/redcap/redcap/bin/scan ./ --output-format=json | jq >${{ env.psalm_output_json }} 2>/dev/null ) || true
+          if [ $(stat -c%s ${{ env.psalm_output_json }}) -lt 5 ]; then
+            echo "psalm_output_json=" >> $GITHUB_ENV
+          fi
 
-      - name: Store output as artifact
+      - name: Store HTML output as artifact
         if: (success() || failure()) && env.psalm_started == '1'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: redcap_scan_output_${{ env.current_date }}
-          path: |
-            ${{ env.psalm_output }}
-            ${{ env.psalm_output_json }}
+          name: ${{ env.psalm_output }}
+          path: ${{ env.psalm_output }}
+          archive: false
+
+      - name: Store JSON output as artifact
+        if: (success() || failure()) && env.psalm_started == '1' && env.psalm_output_json != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.psalm_output_json }}
+          path: ${{ env.psalm_output_json }}
+          archive: false
 
