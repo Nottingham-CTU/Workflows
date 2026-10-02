@@ -164,7 +164,7 @@ jobs:
           installed_php=($(dpkg -l | awk '/^ii/ && $2 ~ /^php[0-9]/ {print $2}'))
           declare -a installed_php_pkgs=()
           for pkg in "${installed_php[@]}"; do
-            if [[ "$pkg" =~ ^php${installed_php_ver}- ]]; then
+            if [[ "$pkg" =~ ^php${installed_php_ver}- && "$pkg" != "php${installed_php_ver}-opcache" ]]; then
               installed_php_pkgs+=("${pkg#php${installed_php_ver}-}")
             fi
           done
@@ -173,13 +173,19 @@ jobs:
           sudo add-apt-repository ppa:ondrej/php > /dev/null 2>&1 || sudo add-apt-repository ppa:ondrej/php > /dev/null
           sudo apt-get update > /dev/null
           php_versions=($(apt-cache search ^php[0-9]\\.[0-9]$ | awk '{print $1}' | sed 's/php//' | sort -t. -k1,1n -k2,2n))
+          if [ "$(apt-cache show php${php_versions[-1]} | awk '$1 == "Version:" {print}' | sed 's/.*beta[1-9].*//')" != \
+               "$(apt-cache show php${php_versions[-1]} | awk '$1 == "Version:" {print}')" ]; then
+            unset 'php_versions[-1]'
+          fi
           echo "Installing PHP ${php_versions[-2]}"
           package="php${php_versions[-2]}"
           sudo NEEDRESTART_SUSPEND=1 apt-get install "$package" > /dev/null 2>&1 || sudo NEEDRESTART_SUSPEND=1 apt-get install "$package" > /dev/null
+          echo -n "Extensions:"
           for pkg in "${installed_php_pkgs[@]}"; do
-            echo " - extension ${pkg}"
+            echo -n " ${pkg}"
             sudo NEEDRESTART_SUSPEND=1 apt-get install "${package}-${pkg}" > /dev/null 2>&1 || sudo NEEDRESTART_SUSPEND=1 apt-get install "${package}-${pkg}" > /dev/null
           done
+          echo "."
 
 
       - name: Start MySQL/MariaDB
@@ -644,7 +650,21 @@ jobs:
           echo '  capman = item.config.pluginmanager.getplugin("capturemanager")' >> ./tests/conftest.py
           echo '  capman.suspend_global_capture()' >> ./tests/conftest.py
           echo '  print(" ", flush=True)' >> ./tests/conftest.py
+          echo '  print("::group::", end="", flush=True)' >> ./tests/conftest.py
           echo '  capman.resume_global_capture()' >> ./tests/conftest.py
+          echo '' >> ./tests/conftest.py
+          echo 'def pytest_runtest_makereport(item, call):' >> ./tests/conftest.py
+          echo '  global pytestfilename' >> ./tests/conftest.py
+          echo '  try:' >> ./tests/conftest.py
+          echo '    pytestfilename' >> ./tests/conftest.py
+          echo '  except NameError:' >> ./tests/conftest.py
+          echo '    pytestfilename = ""' >> ./tests/conftest.py
+          echo '  if call.when != "call" or pytestfilename == str(item.path):' >> ./tests/conftest.py
+          echo '    return' >> ./tests/conftest.py
+          echo '  print("::endgroup::", flush=True)' >> ./tests/conftest.py
+          echo '  print(" "*len(str(item.path.relative_to(item.config.rootpath))), end="", flush=True)' >> ./tests/conftest.py
+          echo '  print("  ", end="", flush=True)' >> ./tests/conftest.py
+          echo '  pytestfilename = str(item.path)' >> ./tests/conftest.py
           echo '' >> ./tests/conftest.py
           #
           #

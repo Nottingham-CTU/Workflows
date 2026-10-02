@@ -44,6 +44,10 @@ jobs:
       fail-fast: false
 
     steps:
+      - name: Show deprecation warning.
+        if: matrix.redcap_version == 'inst' && matrix.browser == 'chrome'
+        run: echo "::warning title=This workflow is deprecated::For testing REDCap external modules, use the REDCap Tests workflow instead."
+
       - name: Get module version
         id: get_mod_version
         env:

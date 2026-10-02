@@ -26,9 +26,8 @@ These are configured in the repository or organization settings:
   * If your module uses system hooks, you will need to uncomment the line to set the RC_SYSTEM_HOOKS
     input to true. This will prevent the security scan from failing due to warning about the system
     hooks.
-  * The security scan is always run using the latest version of REDCap.
-* [REDCap External Module Tests](files/redcap-module-tests.yml)
-  * This workflow is deprecated, please use the *REDCap Tests* workflow instead.
+  * The security scan is run using the latest version of REDCap, you can set the RC_SCAN_VERSION
+    input to override this if necessary.
 * [REDCap Tests](files/redcap-tests.yml)
   * This workflow requires the following variables and secrets:
     * Variable **RC_INSTALLED_VERSION** - The version of REDCap you are using
@@ -81,6 +80,6 @@ These are configured in the repository or organization settings:
   * It will create a release automatically using the version number from the pull request title and
     the pull request description will be used as the release description. The version number must be
     in [semantic versioning](https://semver.org) format.
-  * The release will include 2 zip files, the standard download zip and the REDCap module repository
-    package. The module repository package is similar to the GitHub auto-generated zip file, but
-    includes composer dependencies and excludes testing scripts.
+  * The release will include a zip file for downloading the module (this includes composer
+    dependencies and excludes testing scripts). When submitting the module to the REDCap module
+    repository, you should use the download zip rather than the GitHub auto-generated zip files.

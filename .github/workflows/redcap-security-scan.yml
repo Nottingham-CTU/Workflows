@@ -96,22 +96,28 @@ jobs:
           installed_php=($(dpkg -l | awk '/^ii/ && $2 ~ /^php[0-9]/ {print $2}'))
           declare -a installed_php_pkgs=()
           for pkg in "${installed_php[@]}"; do
-            if [[ "$pkg" =~ ^php${installed_php_ver}- ]]; then
+            if [[ "$pkg" =~ ^php${installed_php_ver}- && "$pkg" != "php${installed_php_ver}-opcache" ]]; then
               installed_php_pkgs+=("${pkg#php${installed_php_ver}-}")
             fi
           done
           echo "Uninstalling PHP ${installed_php_ver_full}"
           sudo apt-get purge "php${installed_php_ver}" "php${installed_php_ver}-*" > /dev/null || true
-          sudo add-apt-repository ppa:ondrej/php > /dev/null
+          sudo add-apt-repository ppa:ondrej/php > /dev/null 2>&1 || sudo add-apt-repository ppa:ondrej/php > /dev/null
           sudo apt-get update > /dev/null
           php_versions=($(apt-cache search ^php[0-9]\\.[0-9]$ | awk '{print $1}' | sed 's/php//' | sort -t. -k1,1n -k2,2n))
+          if [ "$(apt-cache show php${php_versions[-1]} | awk '$1 == "Version:" {print}' | sed 's/.*beta[1-9].*//')" != \
+               "$(apt-cache show php${php_versions[-1]} | awk '$1 == "Version:" {print}')" ]; then
+            unset 'php_versions[-1]'
+          fi
           echo "Installing PHP ${php_versions[-2]}"
           package="php${php_versions[-2]}"
-          sudo NEEDRESTART_SUSPEND=1 apt-get install "$package" > /dev/null || sudo NEEDRESTART_SUSPEND=1 apt-get install "$package" > /dev/null
+          sudo NEEDRESTART_SUSPEND=1 apt-get install "$package" > /dev/null 2>&1 || sudo NEEDRESTART_SUSPEND=1 apt-get install "$package" > /dev/null
+          echo -n "Extensions:"
           for pkg in "${installed_php_pkgs[@]}"; do
-            echo " - extension ${pkg}"
-            sudo NEEDRESTART_SUSPEND=1 apt-get install "${package}-${pkg}" > /dev/null || sudo NEEDRESTART_SUSPEND=1 apt-get install "${package}-${pkg}" > /dev/null
+            echo -n " ${pkg}"
+            sudo NEEDRESTART_SUSPEND=1 apt-get install "${package}-${pkg}" > /dev/null 2>&1 || sudo NEEDRESTART_SUSPEND=1 apt-get install "${package}-${pkg}" > /dev/null
           done
+          echo "."
 
       - name: Start MySQL and create REDCap database
         run: |
