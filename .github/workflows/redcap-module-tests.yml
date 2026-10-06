@@ -22,7 +22,7 @@ on:
 jobs:
   selenium:
     name: Selenium Tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     outputs:
       tests_inst_chrome: ${{ steps.get_output.outputs.tests_inst_chrome }}
@@ -430,7 +430,7 @@ jobs:
 
   output:
     name: Produce Test Output
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [selenium]
     if: (success() || failure()) && needs.selenium.outputs.comp_inst_chrome == '1' && needs.selenium.outputs.comp_inst_firefox == '1' && needs.selenium.outputs.tests_inst_chrome != 'W10=' && needs.selenium.outputs.tests_inst_firefox != 'W10='
     continue-on-error: true
