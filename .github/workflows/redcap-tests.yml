@@ -320,7 +320,7 @@ jobs:
         run: |
           # Set parameters in php.ini file.
           php_version=$(php -v | head -n 1 | cut -d " " -f 2 | cut -f1-2 -d".")
-          php_ini_path_c=$(php --ini | head -n 2 | tail -n 1 | sed "s/[^\/]*\//\//")
+          php_ini_path_c=$(php --ini | head -n 2 | tail -n 1 | sed "s/[^\/]*\//\//" | sed 's/"//')
           php_ini_path_w="/etc/php/$php_version/fpm/php.ini"
           sudo sed -i "s/;\?post_max_size =.*/post_max_size = 100M/" $php_ini_path_c
           sudo sed -i "s/;\?upload_max_filesize =.*/upload_max_filesize = 100M/" $php_ini_path_c
@@ -652,7 +652,7 @@ jobs:
           echo '  capman = item.config.pluginmanager.getplugin("capturemanager")' >> ./tests/conftest.py
           echo '  capman.suspend_global_capture()' >> ./tests/conftest.py
           echo '  print(" ", flush=True)' >> ./tests/conftest.py
-          echo '  print("::group::", end="", flush=True)' >> ./tests/conftest.py
+          echo '  print("::group:: Steps:", flush=True)' >> ./tests/conftest.py
           echo '  capman.resume_global_capture()' >> ./tests/conftest.py
           echo '' >> ./tests/conftest.py
           echo 'def pytest_runtest_makereport(item, call):' >> ./tests/conftest.py

@@ -234,7 +234,7 @@ jobs:
 
       - name: Configure PHP
         run: |
-          php_ini_path=$(php --ini | head -n 2 | tail -n 1 | sed "s/[^\/]*\//\//")
+          php_ini_path=$(php --ini | head -n 2 | tail -n 1 | sed "s/[^\/]*\//\//" | sed 's/"//')
           sudo sed -i "s/;\?sendmail_path =.*/sendmail_path = python3 \/home\/runner\/mailer.py/" $php_ini_path
 
       - name: Start web server
